@@ -58,8 +58,11 @@ module:                   # optional
   asked for. A mismatch raises `BundleError`. The check is skipped, with a log
   message, when no module is installed, several are, or the module's version
   is unknown (local and git sources have none).
-- **Location:** `.nac/bundle.zip`, `.nac/bundle.tar.gz` or `.nac/bundle/`. If
-  more than one exists the library raises an error instead of picking one.
+- **Location:** any `.zip`, `.tar.gz` or `.tgz` file directly in `.nac/`, or an
+  extracted `.nac/bundle/` directory. The file name is free (it can carry a
+  version or architecture, such as `acme-nxos-1.2.0.zip`) and is never parsed:
+  name and version come from the manifest. If more than one bundle is found the
+  library raises an error instead of picking one.
 - **Safety:** archives are checked before extraction (no absolute or `..`
   paths, no symlinks or special files, limits on archive size, extracted size
   and file count). Extraction is atomic and cached by the archive's sha256;
@@ -91,7 +94,7 @@ for layer in layers:  # highest priority first: bundle, then module
   modules it calls directly are considered. If several provide the requested
   paths, `AmbiguousModuleError` lists them; pass `module_dir` to select one.
 - Explicit `module_dir` and `bundle` paths are returned as absolute paths.
-- Bundles are found at `.nac/bundle*`, or pass `bundle`. Archives are
+- Bundles are found in `.nac/`, or pass `bundle`. Archives are
   extracted once into `.nac/cache/`, which ignores itself in git.
 - Failures raise `ArtifactError` subclasses (`ModuleDiscoveryError`,
   `AmbiguousModuleError`, `BundleError`).

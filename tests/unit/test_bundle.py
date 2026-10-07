@@ -737,3 +737,100 @@ class TestPublishRetry:
 
         assert (layer.nac_dir / "schema.yaml").is_file()
         assert sleeps == []
+
+
+class TestDefaultBundleDetection:
+    """Tests for finding a bundle dropped into .nac/ under any file name."""
+
+    @pytest.fixture
+    def nac_dir(self, project: Path) -> Path:
+        directory = project / ".nac"
+        directory.mkdir()
+        return directory
+
+    def test_versioned_architecture_file_name(
+        self, project: Path, nac_dir: Path
+    ) -> None:
+        """Should accept a name carrying a version and an architecture."""
+        make_zip(nac_dir / "acme-nxos-1.2.0.zip", bundle_files(version="1.2.0"))
+
+        layer = resolve_artifacts(project)[0]
+
+        assert layer.origin == "bundle"
+        assert layer.version == "1.2.0"
+
+    @pytest.mark.parametrize("name", ["b.tar.gz", "b.tgz", "B.ZIP", "Acme.Tar.Gz"])
+    def test_supported_extensions(
+        self, project: Path, nac_dir: Path, name: str
+    ) -> None:
+        """Should recognize .zip, .tar.gz and .tgz case-insensitively."""
+        if name.lower().endswith(".zip"):
+            make_zip(nac_dir / name, bundle_files())
+        else:
+            make_tgz(nac_dir / name, bundle_files())
+
+        assert resolve_artifacts(project)[0].origin == "bundle"
+
+    def test_file_name_is_not_parsed(self, project: Path, nac_dir: Path) -> None:
+        """Should take name and version from the manifest, not the file name."""
+        make_zip(nac_dir / "totally-9.9.9-other.zip", bundle_files(version="1.0.0"))
+
+        layer = resolve_artifacts(project)[0]
+
+        assert layer.version == "1.0.0"
+        assert "acme" in layer.detail
+
+    def test_other_files_and_directories_are_ignored(
+        self, project: Path, nac_dir: Path
+    ) -> None:
+        """Should ignore files without a bundle extension and unrelated directories."""
+        (nac_dir / "README.md").write_text("notes")
+        (nac_dir / "bundle.zip.sha256").write_text("abc")
+        (nac_dir / "other-dir").mkdir()
+        (nac_dir / "other.zip").mkdir()  # a directory, not an archive
+
+        assert resolve_artifacts(project) == []
+
+    def test_hidden_archives_are_ignored(self, project: Path, nac_dir: Path) -> None:
+        """Should ignore hidden entries such as editor or temp files."""
+        make_zip(nac_dir / ".hidden.zip", bundle_files())
+
+        assert resolve_artifacts(project) == []
+
+    def test_cache_directory_is_not_a_bundle(
+        self, project: Path, nac_dir: Path, tmp_path: Path
+    ) -> None:
+        """Should not mistake the extraction cache for a bundle directory."""
+        make_zip(nac_dir / "customer.zip", bundle_files())
+
+        resolve_artifacts(project)
+        layers = resolve_artifacts(project)  # the cache now exists
+
+        assert [layer.origin for layer in layers] == ["bundle"]
+
+    def test_multiple_archives_raise_with_sorted_names(
+        self, project: Path, nac_dir: Path
+    ) -> None:
+        """Should list every candidate in a stable order instead of picking one."""
+        make_zip(nac_dir / "b-2.0.0.zip", bundle_files(version="2.0.0"))
+        make_zip(nac_dir / "a-1.0.0.zip", bundle_files(version="1.0.0"))
+
+        with pytest.raises(BundleError, match=r"\(a-1\.0\.0\.zip, b-2\.0\.0\.zip\)"):
+            resolve_artifacts(project)
+
+    def test_archive_and_extracted_directory_raise(
+        self, project: Path, nac_dir: Path
+    ) -> None:
+        """Should treat an archive next to a bundle/ directory as ambiguous."""
+        make_zip(nac_dir / "customer.zip", bundle_files())
+        for name, content in bundle_files().items():
+            target = nac_dir / "bundle" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+
+        with pytest.raises(BundleError, match="Multiple bundles.*bundle.*customer.zip"):
+            resolve_artifacts(project)
+
+    def test_no_nac_directory(self, project: Path) -> None:
+        """Should find nothing when the project has no .nac directory."""
+        assert resolve_artifacts(project) == []

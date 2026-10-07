@@ -17,10 +17,11 @@ from typing import Any
 from ruamel.yaml import YAML
 
 from .constants import (
+    BUNDLE_ARCHIVE_SUFFIXES,
     BUNDLE_CACHE_DIR,
     BUNDLE_CACHE_KEY_LENGTH,
-    BUNDLE_CANDIDATES,
     BUNDLE_DIR,
+    BUNDLE_DIRNAME,
     BUNDLE_MANIFEST_FILENAME,
     BUNDLE_MAX_BYTES,
     BUNDLE_MAX_FILES,
@@ -237,6 +238,30 @@ def _validate_manifest(manifest: dict[str, Any], bundle: Path) -> None:
         raise BundleError(f"'module.versions' in {where} must be a string")
 
 
+def _default_bundles(project_dir: Path) -> list[Path]:
+    """List bundles dropped into ``.nac/``, sorted by name.
+
+    Any archive with a supported extension counts, whatever its name, as does
+    a ``bundle/`` directory. Hidden entries and other directories (such as the
+    cache) are ignored.
+    """
+    bundle_dir = project_dir / BUNDLE_DIR
+    if not bundle_dir.is_dir():
+        return []
+    return sorted(
+        (
+            p
+            for p in bundle_dir.iterdir()
+            if not p.name.startswith(".")
+            and (
+                (p.is_file() and p.name.lower().endswith(BUNDLE_ARCHIVE_SUFFIXES))
+                or (p.is_dir() and p.name == BUNDLE_DIRNAME)
+            )
+        ),
+        key=lambda p: p.name,
+    )
+
+
 def find_bundle_layer(
     project_dir: Path,
     *,
@@ -249,7 +274,8 @@ def find_bundle_layer(
         project_dir: Project directory holding ``.nac/``.
         provides: Paths relative to ``nac/`` of which the bundle must have at
             least one.
-        bundle: Use this archive or directory instead of ``.nac/bundle*``.
+        bundle: Use this archive or directory instead of the one found in
+            ``.nac/`` (any ``.zip``, ``.tar.gz`` or ``.tgz`` file, or ``bundle/``).
 
     Returns:
         The bundle layer, or None if no bundle is present.
@@ -263,11 +289,7 @@ def find_bundle_layer(
     paths = validate_provides(provides)
     project_dir = project_dir.resolve()
     if bundle is None:
-        found = [
-            p
-            for p in (project_dir / BUNDLE_DIR / name for name in BUNDLE_CANDIDATES)
-            if p.exists()
-        ]
+        found = _default_bundles(project_dir)
         if len(found) > 1:
             names = ", ".join(p.name for p in found)
             raise BundleError(
