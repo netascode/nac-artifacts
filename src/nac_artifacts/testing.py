@@ -12,7 +12,7 @@ stated otherwise.
 import json
 import tarfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
 
@@ -100,6 +100,15 @@ def bundle_files(
     for archive_path, text in (extra or {}).items():
         content[archive_path] = text
     return content
+
+
+def overrides_yaml(*, rules: Sequence[str] = (), templates: Sequence[str] = ()) -> str:
+    """Return the text of an ``overrides.yaml`` disabling the given entries."""
+    return (
+        "disable:\n"
+        f"  rules: {json.dumps(list(rules))}\n"
+        f"  templates: {json.dumps(list(templates))}\n"
+    )
 
 
 def make_zip(path: Path, files: Mapping[str, str]) -> Path:

@@ -47,7 +47,7 @@ made by zipping a single folder is accepted as well.
 
 ```yaml
 # manifest.yaml
-name: acme
+name: acme-base           # required; identifies the bundle in messages, independent of the file name
 version: "1.2.0"          # must be a string: quote it, an unquoted 1.10 is read as 1.1
 module:                   # optional
   versions: ">=0.3,<0.4"  # PEP 440 specifier
@@ -61,8 +61,19 @@ module:                   # optional
 - **Location:** any `.zip`, `.tar.gz` or `.tgz` file directly in `.nac/`, or an
   extracted `.nac/bundle/` directory. The file name is free (it can carry a
   version or architecture, such as `acme-nxos-1.2.0.zip`) and is never parsed:
-  name and version come from the manifest. If more than one bundle is found the
-  library raises an error instead of picking one.
+  identity comes from the manifest `name`.
+- **Several bundles:** all bundles in `.nac/` (or all passed explicitly) are
+  *peers* in one priority tier, above the module. They may coexist as long as they
+  provide different artifacts, which allows splitting content (for example rules in
+  one bundle and tests in another). If two bundles provide the same artifact, the
+  tool reports an error naming both. A bundle's `overrides.yaml` affects the module
+  but not its peer bundles.
+- **Same name twice:** two bundles with the same manifest `name` (typically an old
+  and a new version left in `.nac/`) are an error, because a forgotten old version
+  would otherwise keep providing artifacts the new one dropped or renamed.
+- **Bundles for other tools:** a bundle found in `.nac/` that provides nothing the
+  calling tool uses is skipped (logged at INFO). A bundle passed explicitly that
+  provides nothing is an error.
 - **Safety:** archives are checked before extraction (no absolute or `..`
   paths, no symlinks or special files, limits on archive size, extracted size
   and file count). Extraction is atomic and cached by the archive's sha256;
@@ -70,6 +81,38 @@ module:                   # optional
 - **Trust:** bundles usually contain code that the tools execute (validation
   rules, Jinja filters), so a bundle needs the same trust as code in your own
   repository.
+
+## Disabling artifacts of lower layers
+
+A layer can add or replace artifacts of the layers below it. To *remove* some, list
+them in an `overrides.yaml`:
+
+```yaml
+disable:
+  rules: ["102"]                    # nac-validate: by rule ID (exact match)
+  templates: ["config/*.robot"]     # nac-test: by path relative to the templates directory
+```
+
+The same format is read from two places:
+
+- `.nac/overrides.yaml` in the project: disables artifacts of the bundle and the module
+- `overrides.yaml` at the root of a bundle (next to `manifest.yaml`): disables artifacts of the module
+
+Rules:
+
+- A layer's entries only affect layers *below* it. Its own artifacts and the local
+  layer (files and paths you pass to the tools) are never affected; to get a disabled
+  artifact back, add a copy to the local layer.
+- Entries are declarative: they state what must not be active. An entry that matches
+  nothing (a typo, a module that no longer has the artifact, no bundle installed) is
+  not an error. The tools show which entries matched in `--list-artifacts`.
+- The structure is validated: unknown keys, wrong types, empty entries and absolute or
+  `..` template paths are errors (`OverridesError`). Rule IDs may be written unquoted
+  (`102`).
+- Template patterns are globs (`fnmatch`; `*` also matches `/`, so `lib/*` covers
+  nested files) and are case-sensitive.
+- Bundle overrides can switch validations off, so treat a bundle like code you run. Each
+  tool logs a summary at INFO level and shows what was disabled and by which layer.
 
 ## Usage
 
@@ -82,8 +125,17 @@ layers = resolve_artifact_layers(
     Path.cwd(),
     provides=("schema.yaml", "rules"),  # paths below nac/ this tool needs
 )
-for layer in layers:  # highest priority first: bundle, then module
-    print(layer.origin, layer.version, layer.nac_dir)
+for layer in layers:  # bundles (peers) first, then the module
+    print(layer.label, layer.version, layer.nac_dir)
+
+# Entries to disable per layer (same order as layers), from .nac/overrides.yaml and bundles
+from nac_artifacts import DisableMatcher, layer_disables
+
+for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
+    matcher = DisableMatcher(disabled.rules)  # exact; use glob=True for templates
+    if matcher.match("102"):
+        ...  # rule 102 is disabled for this layer
+    print(matcher.unmatched())  # entries that matched nothing, for reporting
 ```
 
 - A layer is used only if it has at least one of the `provides` paths, so each
@@ -94,7 +146,7 @@ for layer in layers:  # highest priority first: bundle, then module
   modules it calls directly are considered. If several provide the requested
   paths, `AmbiguousModuleError` lists them; pass `module_dir` to select one.
 - Explicit `module_dir` and `bundle` paths are returned as absolute paths.
-- Bundles are found in `.nac/`, or pass `bundle`. Archives are
+- Bundles are found in `.nac/`, or pass `bundles`. Archives are
   extracted once into `.nac/cache/`, which ignores itself in git.
 - Failures raise `ArtifactError` subclasses (`ModuleDiscoveryError`,
   `AmbiguousModuleError`, `BundleError`).

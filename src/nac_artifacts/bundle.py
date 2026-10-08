@@ -4,6 +4,7 @@
 """Discovery, extraction and caching of artifact bundles."""
 
 import hashlib
+import logging
 import os
 import shutil
 import tarfile
@@ -28,9 +29,13 @@ from .constants import (
     BUNDLE_REPLACE_ATTEMPTS,
     BUNDLE_REPLACE_DELAY_SECONDS,
     BUNDLE_STALE_TEMP_SECONDS,
+    OVERRIDES_FILENAME,
 )
 from .exceptions import BundleError
 from .layer import ArtifactLayer, describe_paths, provides_any, validate_provides
+from .overrides import Overrides, load_overrides
+
+logger = logging.getLogger(__name__)
 
 # Extraction filters were added to tarfile in 3.12 and backported to 3.10.12+
 _TAR_FILTERS_SUPPORTED = hasattr(tarfile, "data_filter")
@@ -222,8 +227,10 @@ def _validate_manifest(manifest: dict[str, Any], bundle: Path) -> None:
     """Reject manifest fields of the wrong type instead of silently ignoring them."""
     where = f"{BUNDLE_MANIFEST_FILENAME} in bundle {bundle}"
     name = manifest.get("name")
-    if name is not None and not isinstance(name, str):
-        raise BundleError(f"'name' in {where} must be a string")
+    if not isinstance(name, str) or not name.strip():
+        raise BundleError(
+            f"'name' in {where} is required and must be a non-empty string"
+        )
     if manifest.get("version") is not None and not isinstance(manifest["version"], str):
         # YAML reads an unquoted 1.10 as the number 1.1, so it cannot be recovered
         raise BundleError(
@@ -262,53 +269,95 @@ def _default_bundles(project_dir: Path) -> list[Path]:
     )
 
 
-def find_bundle_layer(
+def _open_bundle(project_dir: Path, bundle: Path) -> ArtifactLayer:
+    """Materialize a bundle and read its manifest and overrides."""
+    extracted, digest = _materialize_bundle(project_dir, bundle)
+    root = _locate_bundle_root(extracted, bundle)
+    manifest = _read_manifest(root, bundle)
+    version = manifest.get("version")
+    detail = f"{version} " if version else ""
+    detail += f"({bundle}" + (f", sha256 {digest[:12]}" if digest else "") + ")"
+    overrides_file = root / OVERRIDES_FILENAME
+    overrides = (
+        load_overrides(overrides_file, f"{OVERRIDES_FILENAME} in bundle {bundle}")
+        if overrides_file.is_file()
+        else Overrides()
+    )
+    return ArtifactLayer("bundle", root, version, detail, manifest, overrides)
+
+
+def _check_unique_names(opened: Sequence[tuple[Path, ArtifactLayer]]) -> None:
+    """Refuse two bundles with the same manifest name (e.g. an old and a new version).
+
+    Without this a forgotten old version would silently keep providing
+    artifacts the new version dropped or renamed.
+    """
+    by_name: dict[str, list[tuple[Path, ArtifactLayer]]] = {}
+    for path, layer in opened:
+        by_name.setdefault(str(layer.manifest["name"]).strip(), []).append(
+            (path, layer)
+        )
+    for name, same in by_name.items():
+        if len(same) > 1:
+            found = "; ".join(
+                f"{layer.version or 'no version'} at {path}" for path, layer in same
+            )
+            raise BundleError(
+                f"Bundle '{name}' is present {len(same)} times ({found}); keep one"
+            )
+
+
+def find_bundle_layers(
     project_dir: Path,
     *,
     provides: Sequence[str],
-    bundle: Path | None = None,
-) -> ArtifactLayer | None:
-    """Locate, materialize and describe the bundle layer.
+    bundles: Sequence[Path] | None = None,
+) -> list[ArtifactLayer]:
+    """Locate, materialize and describe the bundle layers.
+
+    All bundles are peers of one priority tier: they may coexist as long as
+    they provide different artifacts. Tools report an artifact that two bundles
+    both provide as an error, so the order of the result has no meaning.
 
     Args:
         project_dir: Project directory holding ``.nac/``.
-        provides: Paths relative to ``nac/`` of which the bundle must have at
-            least one.
-        bundle: Use this archive or directory instead of the one found in
-            ``.nac/`` (any ``.zip``, ``.tar.gz`` or ``.tgz`` file, or ``bundle/``).
+        provides: Paths relative to ``nac/`` of which a bundle must have at
+            least one to be used.
+        bundles: Use these archives or directories instead of the ones found
+            in ``.nac/`` (any ``.zip``, ``.tar.gz`` or ``.tgz`` file, or
+            ``bundle/``).
 
     Returns:
-        The bundle layer, or None if no bundle is present.
+        The bundle layers that provide at least one of ``provides``. Bundles
+        found in ``.nac/`` that provide none of them are skipped (they may be
+        meant for another tool); explicitly given bundles that provide none
+        are an error.
 
     Raises:
         TypeError: If ``provides`` is a single string.
         ValueError: If ``provides`` is empty or has an invalid path.
-        BundleError: If the bundle is missing (when given explicitly), several
-            default bundles exist, or it is unsafe, invalid or provides nothing.
+        BundleError: If an explicitly given bundle is missing or provides
+            nothing, a bundle is unsafe or invalid, or two bundles share a name.
     """
     paths = validate_provides(provides)
     project_dir = project_dir.resolve()
-    if bundle is None:
-        found = _default_bundles(project_dir)
-        if len(found) > 1:
-            names = ", ".join(p.name for p in found)
-            raise BundleError(
-                f"Multiple bundles found in {BUNDLE_DIR}/ ({names}); "
-                "keep one or select one explicitly"
-            )
-        if not found:
-            return None
-        bundle = found[0]
-    elif not bundle.exists():
-        raise BundleError(f"Bundle not found: {bundle}")
+    explicit = bool(bundles)
+    sources = list(bundles or []) if explicit else _default_bundles(project_dir)
+    for bundle in sources:
+        if explicit and not bundle.exists():
+            raise BundleError(f"Bundle not found: {bundle}")
 
-    extracted, digest = _materialize_bundle(project_dir, bundle)
-    root = _locate_bundle_root(extracted, bundle)
-    manifest = _read_manifest(root, bundle)
-    name, version = manifest.get("name"), manifest.get("version")
-    detail = f"bundle {name or bundle.name}"
-    detail += f" {version}" if version else ""
-    detail += f" ({bundle}" + (f", sha256 {digest[:12]}" if digest else "") + ")"
-    if not provides_any(root, paths):
-        raise BundleError(f"Bundle {bundle} contains no {describe_paths(paths)}")
-    return ArtifactLayer("bundle", root, version, detail, manifest)
+    opened = [(bundle, _open_bundle(project_dir, bundle)) for bundle in sources]
+    _check_unique_names(opened)
+
+    layers: list[ArtifactLayer] = []
+    for bundle, layer in opened:
+        if provides_any(layer.root, paths):
+            layers.append(layer)
+        elif explicit:
+            raise BundleError(f"Bundle {bundle} contains no {describe_paths(paths)}")
+        else:
+            logger.info(
+                "Ignoring %s: it provides no %s", layer.label, describe_paths(paths)
+            )
+    return layers

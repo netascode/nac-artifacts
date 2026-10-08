@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from .constants import ARTIFACTS_DIRNAME
+from .overrides import Overrides
 
 ArtifactOrigin = Literal["bundle", "module"]
 
@@ -23,6 +24,7 @@ class ArtifactLayer:
         version: Module version or bundle manifest version, if known.
         detail: Human-readable description of where the layer came from.
         manifest: Parsed bundle ``manifest.yaml`` (empty for modules).
+        overrides: Entries from the bundle's ``overrides.yaml`` (none for modules).
     """
 
     origin: ArtifactOrigin
@@ -30,6 +32,14 @@ class ArtifactLayer:
     version: str | None = None
     detail: str = ""
     manifest: Mapping[str, Any] = field(default_factory=dict, compare=False)
+    overrides: Overrides = field(default_factory=Overrides, compare=False)
+
+    @property
+    def label(self) -> str:
+        """Short name for messages, e.g. ``module`` or ``bundle acme-base``."""
+        if self.origin == "bundle":
+            return f"bundle {self.manifest.get('name', '?')}"
+        return self.origin
 
     @property
     def nac_dir(self) -> Path:

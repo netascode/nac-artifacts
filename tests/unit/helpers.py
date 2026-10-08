@@ -83,16 +83,19 @@ def bundle_files(
     version: str = "1.0.0",
     extra: dict[str, str] | None = None,
     manifest_extra: str = "",
+    name: str = "acme",
 ) -> dict[str, str]:
     """Return a bundle with a schema, one rule (ID 2) and optional additions.
 
     Args:
         version: Bundle version in the manifest
+        name: Bundle name in the manifest
         extra: Raw archive members, keyed by their exact archive path
         manifest_extra: Raw YAML appended to the manifest
     """
     return _bundle_files(
         artifact_files(rules={"2": "bundle rule"}),
+        name=name,
         version=version,
         extra=extra,
         manifest_extra=manifest_extra,
@@ -104,9 +107,11 @@ def resolve_artifacts(
     *,
     provides: Sequence[str] = PROVIDES,
     bundle: Path | None = None,
+    bundles: Sequence[Path] | None = None,
     module_dir: Path | None = None,
 ) -> list[ArtifactLayer]:
-    """Resolve the bundle and module layers."""
+    """Resolve the bundle and module layers (``bundle`` is shorthand for one bundle)."""
+    explicit = list(bundles) if bundles else ([bundle] if bundle is not None else None)
     return resolve_artifact_layers(
-        project, provides=provides, bundle=bundle, module_dir=module_dir
+        project, provides=provides, bundles=explicit, module_dir=module_dir
     )

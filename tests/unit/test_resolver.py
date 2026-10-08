@@ -12,7 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from nac_artifacts import ArtifactLayer, BundleError, ModuleDiscoveryError
+from nac_artifacts import (
+    ArtifactLayer,
+    ArtifactOrigin,
+    BundleError,
+    DisableEntry,
+    ModuleDiscoveryError,
+    Overrides,
+    disables_by_layer,
+    layer_disables,
+)
+from nac_artifacts.testing import overrides_yaml, write_files
 from tests.unit.helpers import (
     bundle_files,
     install_module,
@@ -239,3 +249,143 @@ class TestResolveValidation:
         """Should refuse an empty list of paths."""
         with pytest.raises(ValueError, match="at least one"):
             resolve_artifacts(project, provides=())
+
+
+class TestDisablesByLayer:
+    """Tests for which disable entries apply to which layer."""
+
+    @staticmethod
+    def layer(
+        origin: ArtifactOrigin, name: str = "acme", **disabled: tuple[str, ...]
+    ) -> ArtifactLayer:
+        return ArtifactLayer(
+            origin,
+            Path("/x"),
+            manifest={"name": name},
+            overrides=Overrides(**disabled),
+        )
+
+    def test_project_entries_apply_to_every_layer(self) -> None:
+        """Should apply the project's entries to the bundle and the module."""
+        layers = [self.layer("bundle"), self.layer("module")]
+
+        result = disables_by_layer(Overrides(rules=("1",), templates=("a",)), layers)
+
+        for applied in result:
+            assert applied.rules == (DisableEntry("1", "project"),)
+            assert applied.templates == (DisableEntry("a", "project"),)
+
+    def test_bundle_entries_apply_only_to_layers_below(self) -> None:
+        """Should apply a bundle's entries to the module but not to the bundle."""
+        layers = [self.layer("bundle", rules=("7",)), self.layer("module")]
+
+        bundle, module = disables_by_layer(Overrides(), layers)
+
+        assert bundle.rules == ()
+        assert module.rules == (DisableEntry("7", "bundle acme"),)
+
+    def test_project_entries_come_before_bundle_entries(self) -> None:
+        """Should list the highest priority source first."""
+        layers = [self.layer("bundle", rules=("7",)), self.layer("module")]
+
+        _, module = disables_by_layer(Overrides(rules=("1",)), layers)
+
+        assert [(e.pattern, e.source) for e in module.rules] == [
+            ("1", "project"),
+            ("7", "bundle acme"),
+        ]
+
+    def test_bundles_are_peers_their_entries_do_not_affect_each_other(self) -> None:
+        """Should apply each bundle's entries to the module only, not to a peer bundle."""
+        layers = [
+            self.layer("bundle", "a", rules=("1",)),
+            self.layer("bundle", "b", rules=("2",)),
+            self.layer("module"),
+        ]
+
+        a, b, module = disables_by_layer(Overrides(), layers)
+
+        assert a.rules == () and b.rules == ()
+        assert [(e.pattern, e.source) for e in module.rules] == [
+            ("1", "bundle a"),
+            ("2", "bundle b"),
+        ]
+
+    def test_project_entries_reach_every_peer_bundle(self) -> None:
+        """Should still apply the project's entries to all bundles."""
+        layers = [self.layer("bundle", "a"), self.layer("bundle", "b")]
+
+        a, b = disables_by_layer(Overrides(rules=("9",)), layers)
+
+        assert a.rules == b.rules == (DisableEntry("9", "project"),)
+
+    def test_module_entries_are_never_applied_upwards(self) -> None:
+        """Should not let a lower layer disable anything above it."""
+        layers = [self.layer("bundle"), self.layer("module", rules=("9",))]
+
+        bundle, _ = disables_by_layer(Overrides(), layers)
+
+        assert bundle.rules == ()
+
+    def test_no_layers(self) -> None:
+        """Should return nothing without layers."""
+        assert disables_by_layer(Overrides(rules=("1",)), []) == []
+
+    def test_one_result_per_layer_in_order(self) -> None:
+        """Should keep the result aligned with the layers."""
+        layers = [self.layer("bundle"), self.layer("module")]
+
+        assert len(disables_by_layer(Overrides(), layers)) == 2
+
+
+class TestLayerDisables:
+    """Tests for reading overrides from the project and from bundles together."""
+
+    def test_reads_project_and_bundle_overrides(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should combine .nac/overrides.yaml with a bundle's overrides.yaml."""
+        install_module(project)
+        write_files(project / ".nac", {"overrides.yaml": overrides_yaml(rules=["1"])})
+        archive = make_zip(
+            tmp_path / "b.zip",
+            bundle_files(extra={"overrides.yaml": overrides_yaml(rules=["2"])}),
+        )
+        layers = resolve_artifacts(project, bundle=archive)
+
+        bundle, module = layer_disables(project, layers)
+
+        assert [e.pattern for e in bundle.rules] == ["1"]
+        assert [(e.pattern, e.source) for e in module.rules] == [
+            ("1", "project"),
+            ("2", "bundle acme"),
+        ]
+
+    def test_without_any_overrides(self, project: Path) -> None:
+        """Should return empty results when no overrides exist."""
+        install_module(project)
+
+        (module,) = layer_disables(project, resolve_artifacts(project))
+
+        assert module.rules == () and module.templates == ()
+
+    def test_logs_what_a_bundle_disables(
+        self, project: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Should log a one-line summary so a bundle's effect is not hidden."""
+        caplog.set_level(logging.INFO, logger="nac_artifacts")
+        install_module(project)
+        archive = make_zip(
+            tmp_path / "b.zip",
+            bundle_files(
+                version="1.2.0",
+                extra={"overrides.yaml": overrides_yaml(rules=["1", "2"])},
+            ),
+        )
+
+        layer_disables(project, resolve_artifacts(project, bundle=archive))
+
+        assert (
+            "Bundle acme 1.2.0 disables 2 rule(s) and 0 template pattern(s)"
+            in caplog.text
+        )

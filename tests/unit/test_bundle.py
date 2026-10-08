@@ -7,6 +7,7 @@ Tests verify bundle discovery, safe extraction and the content-addressed cache.
 """
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -17,9 +18,16 @@ from pathlib import Path
 
 import pytest
 
-from nac_artifacts import ArtifactLayer, BundleError, find_bundle_layer
+from nac_artifacts import (
+    ArtifactError,
+    ArtifactLayer,
+    BundleError,
+    OverridesError,
+    find_bundle_layers,
+)
 from nac_artifacts.bundle import _sha256_file
 from nac_artifacts.constants import BUNDLE_REPLACE_ATTEMPTS
+from nac_artifacts.testing import overrides_yaml
 from tests.unit.helpers import (
     bundle_files,
     make_tgz,
@@ -328,42 +336,35 @@ class TestBundleSelection:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
 
-        layer = find_bundle_layer(
-            project, provides=("schema.yaml",), bundle=Path("customer")
+        (layer,) = find_bundle_layers(
+            project, provides=("schema.yaml",), bundles=[Path("customer")]
         )
 
-        assert layer is not None
         assert layer.root.is_absolute()
         assert layer.root == (project / "customer").resolve()
 
-    def test_multiple_default_bundles_raise(self, project: Path) -> None:
-        """Should not silently pick one when several default bundles exist."""
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/bundle.zip", bundle_files(version="1.0.0"))
-        make_tgz(project / ".nac/bundle.tar.gz", bundle_files(version="2.0.0"))
-
-        with pytest.raises(BundleError, match="Multiple bundles.*bundle.zip"):
-            resolve_artifacts(project)
-
-    def test_explicit_bundle_wins_over_default_bundles(
+    def test_explicit_bundles_replace_auto_detection(
         self, project: Path, tmp_path: Path
     ) -> None:
-        """Should use --bundle even if default bundles exist."""
+        """Should use only the given bundles even if .nac/ holds others."""
         (project / ".nac").mkdir()
-        make_zip(project / ".nac/bundle.zip", bundle_files(version="1.0.0"))
-        make_tgz(project / ".nac/bundle.tar.gz", bundle_files(version="2.0.0"))
-        chosen = make_zip(tmp_path / "x.zip", bundle_files(version="3.0.0"))
+        make_zip(project / ".nac/detected.zip", bundle_files(name="detected"))
+        chosen = make_zip(tmp_path / "x.zip", bundle_files(name="chosen"))
 
-        assert resolve_artifacts(project, bundle=chosen)[0].version == "3.0.0"
+        layers = resolve_artifacts(project, bundle=chosen)
 
-    def test_find_bundle_layer_returns_none_without_bundle(self, project: Path) -> None:
-        """Should return None when no bundle is present."""
-        assert find_bundle_layer(project, provides=("schema.yaml",)) is None
+        assert [layer.manifest["name"] for layer in layers] == ["chosen"]
 
-    def test_find_bundle_layer_validates_provides(self, project: Path) -> None:
-        """Should reject invalid requested paths before touching the bundle."""
+    def test_find_bundle_layers_returns_nothing_without_bundles(
+        self, project: Path
+    ) -> None:
+        """Should return an empty list when no bundle is present."""
+        assert find_bundle_layers(project, provides=("schema.yaml",)) == []
+
+    def test_find_bundle_layers_validates_provides(self, project: Path) -> None:
+        """Should reject invalid requested paths before touching any bundle."""
         with pytest.raises(ValueError, match="at least one"):
-            find_bundle_layer(project, provides=())
+            find_bundle_layers(project, provides=())
 
 
 class TestBundleRoot:
@@ -427,7 +428,9 @@ class TestManifestValidation:
         project: Path, tmp_path: Path, manifest: str
     ) -> list[ArtifactLayer]:
         files = bundle_files()
-        files["manifest.yaml"] = manifest
+        files["manifest.yaml"] = (
+            manifest if manifest.startswith("name:") else f"name: acme\n{manifest}"
+        )
         return resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", files))
 
     def test_unquoted_float_version_is_rejected(
@@ -445,7 +448,7 @@ class TestManifestValidation:
 
     def test_non_string_name_is_rejected(self, project: Path, tmp_path: Path) -> None:
         """Should refuse a name that is not a string."""
-        with pytest.raises(BundleError, match="'name'.*must be a string"):
+        with pytest.raises(BundleError, match="'name'.*non-empty string"):
             self.resolve_with(project, tmp_path, "name: 5\n")
 
     @pytest.mark.parametrize(
@@ -778,7 +781,7 @@ class TestDefaultBundleDetection:
         layer = resolve_artifacts(project)[0]
 
         assert layer.version == "1.0.0"
-        assert "acme" in layer.detail
+        assert layer.label == "bundle acme"
 
     def test_other_files_and_directories_are_ignored(
         self, project: Path, nac_dir: Path
@@ -808,29 +811,317 @@ class TestDefaultBundleDetection:
 
         assert [layer.origin for layer in layers] == ["bundle"]
 
-    def test_multiple_archives_raise_with_sorted_names(
+    def test_all_bundles_in_nac_are_used_sorted_by_file_name(
         self, project: Path, nac_dir: Path
     ) -> None:
-        """Should list every candidate in a stable order instead of picking one."""
-        make_zip(nac_dir / "b-2.0.0.zip", bundle_files(version="2.0.0"))
-        make_zip(nac_dir / "a-1.0.0.zip", bundle_files(version="1.0.0"))
+        """Should take every bundle, in a stable order by file name."""
+        make_zip(nac_dir / "b-extra.zip", bundle_files(name="extra"))
+        make_zip(nac_dir / "a-base.zip", bundle_files(name="base"))
 
-        with pytest.raises(BundleError, match=r"\(a-1\.0\.0\.zip, b-2\.0\.0\.zip\)"):
-            resolve_artifacts(project)
+        layers = resolve_artifacts(project)
 
-    def test_archive_and_extracted_directory_raise(
+        assert [layer.manifest["name"] for layer in layers] == ["base", "extra"]
+
+    def test_archive_and_extracted_directory_coexist(
         self, project: Path, nac_dir: Path
     ) -> None:
-        """Should treat an archive next to a bundle/ directory as ambiguous."""
-        make_zip(nac_dir / "customer.zip", bundle_files())
-        for name, content in bundle_files().items():
-            target = nac_dir / "bundle" / name
+        """Should treat an archive next to a bundle/ directory as two bundles."""
+        make_zip(nac_dir / "customer.zip", bundle_files(name="zipped"))
+        for rel, content in bundle_files(name="folder").items():
+            target = nac_dir / "bundle" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
 
-        with pytest.raises(BundleError, match="Multiple bundles.*bundle.*customer.zip"):
-            resolve_artifacts(project)
+        layers = resolve_artifacts(project)
+
+        assert sorted(layer.manifest["name"] for layer in layers) == [
+            "folder",
+            "zipped",
+        ]
 
     def test_no_nac_directory(self, project: Path) -> None:
         """Should find nothing when the project has no .nac directory."""
         assert resolve_artifacts(project) == []
+
+
+class TestBundleOverrides:
+    """Tests for the overrides.yaml shipped at the root of a bundle."""
+
+    def test_overrides_are_loaded_from_an_archive(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should expose the bundle's disable entries on the layer."""
+        text = overrides_yaml(rules=["102"], templates=["lib/*"])
+        archive = make_zip(
+            tmp_path / "b.zip", bundle_files(extra={"overrides.yaml": text})
+        )
+
+        layer = resolve_artifacts(project, bundle=archive)[0]
+
+        assert layer.overrides.rules == ("102",)
+        assert layer.overrides.templates == ("lib/*",)
+
+    def test_overrides_are_loaded_from_a_directory_bundle(self, project: Path) -> None:
+        """Should read overrides.yaml from an extracted bundle too."""
+        for name, content in {
+            **bundle_files(),
+            "overrides.yaml": overrides_yaml(rules=["5"]),
+        }.items():
+            target = project / ".nac/bundle" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+
+        assert resolve_artifacts(project)[0].overrides.rules == ("5",)
+
+    def test_overrides_in_a_zipped_folder(self, project: Path, tmp_path: Path) -> None:
+        """Should find overrides.yaml next to the manifest in a single top folder."""
+        files = {
+            f"customer/{name}": text
+            for name, text in {
+                **bundle_files(),
+                "overrides.yaml": overrides_yaml(rules=["8"]),
+            }.items()
+        }
+
+        layer = resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", files))[
+            0
+        ]
+
+        assert layer.overrides.rules == ("8",)
+
+    def test_no_overrides_file(self, project: Path, tmp_path: Path) -> None:
+        """Should have empty overrides when the bundle ships none."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files())
+
+        assert resolve_artifacts(project, bundle=archive)[0].overrides.is_empty
+
+    def test_overrides_under_nac_are_not_used(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should only read overrides.yaml from the bundle root, not from nac/."""
+        archive = make_zip(
+            tmp_path / "b.zip",
+            bundle_files(extra={"nac/overrides.yaml": overrides_yaml(rules=["1"])}),
+        )
+
+        assert resolve_artifacts(project, bundle=archive)[0].overrides.is_empty
+
+    def test_malformed_overrides_name_the_bundle(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should report the problem against the bundle, not its cache path."""
+        archive = make_zip(
+            tmp_path / "customer.zip", bundle_files(extra={"overrides.yaml": "- x\n"})
+        )
+
+        with pytest.raises(
+            OverridesError, match="overrides.yaml in bundle .*customer.zip"
+        ):
+            resolve_artifacts(project, bundle=archive)
+
+    def test_overrides_error_is_an_artifact_error(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should be catchable together with every other discovery failure."""
+        archive = make_zip(
+            tmp_path / "b.zip", bundle_files(extra={"overrides.yaml": "bad: [\n"})
+        )
+
+        with pytest.raises(ArtifactError):
+            resolve_artifacts(project, bundle=archive)
+
+    def test_default_bundle_detection_ignores_overrides_file(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should not mistake .nac/overrides.yaml for a bundle."""
+        (project / ".nac").mkdir()
+        (project / ".nac" / "overrides.yaml").write_text(overrides_yaml(rules=["1"]))
+
+        assert resolve_artifacts(project) == []
+
+
+def split_files(name: str, **artifacts: str) -> dict[str, str]:
+    """A bundle whose artifacts are given as relative path -> content."""
+    return {
+        "manifest.yaml": f"name: {name}\nversion: 1.0.0\n",
+        **{f"nac/{rel}": text for rel, text in artifacts.items()},
+    }
+
+
+class TestMultipleBundles:
+    """Several bundles are peers: they may coexist and split artifacts between them."""
+
+    def test_two_bundles_with_different_artifacts_coexist(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should return both layers when they provide different things."""
+        rules = make_zip(
+            tmp_path / "r.zip", split_files("rules-bundle", **{"rules/1.py": ""})
+        )
+        schema = make_zip(
+            tmp_path / "s.zip",
+            split_files("schema-bundle", **{"schema.yaml": "a: str()\n"}),
+        )
+
+        layers = resolve_artifacts(project, bundles=[rules, schema])
+
+        assert [layer.manifest["name"] for layer in layers] == [
+            "rules-bundle",
+            "schema-bundle",
+        ]
+
+    def test_explicit_order_is_kept(self, project: Path, tmp_path: Path) -> None:
+        """Should return explicitly given bundles in the order given."""
+        a = make_zip(tmp_path / "a.zip", bundle_files(name="a"))
+        b = make_zip(tmp_path / "b.zip", bundle_files(name="b"))
+
+        names = [
+            layer.manifest["name"]
+            for layer in resolve_artifacts(project, bundles=[b, a])
+        ]
+
+        assert names == ["b", "a"]
+
+    def test_labels_name_the_bundle(self, project: Path, tmp_path: Path) -> None:
+        """Should label layers with their manifest name, not the file name."""
+        archive = make_zip(
+            tmp_path / "whatever-1.2.zip", bundle_files(name="acme-base")
+        )
+
+        assert resolve_artifacts(project, bundle=archive)[0].label == "bundle acme-base"
+
+    def test_detail_shows_version_and_location(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should describe a bundle by version, path and digest."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files(version="1.2.0"))
+
+        detail = resolve_artifacts(project, bundle=archive)[0].detail
+
+        assert detail.startswith("1.2.0 (") and "b.zip" in detail and "sha256" in detail
+
+    def test_same_name_twice_is_an_error_with_both_versions(
+        self, project: Path, nac_dir_with_two_versions: Path
+    ) -> None:
+        """Should refuse two versions of one bundle, naming both."""
+        with pytest.raises(
+            BundleError, match=r"'acme' is present 2 times.*1\.0\.0.*2\.0\.0"
+        ):
+            resolve_artifacts(project)
+
+    def test_same_name_is_caught_even_without_overlapping_artifacts(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should catch a forgotten old version whose artifacts no longer overlap."""
+        old = make_zip(
+            tmp_path / "old.zip", split_files("acme", **{"rules/old_rule.py": ""})
+        )
+        new = make_zip(
+            tmp_path / "new.zip", split_files("acme", **{"rules/new_rule.py": ""})
+        )
+
+        with pytest.raises(BundleError, match="'acme' is present 2 times"):
+            resolve_artifacts(project, bundles=[old, new])
+
+    def test_same_bundle_given_twice_is_an_error(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should refuse the same archive listed twice."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files())
+
+        with pytest.raises(BundleError, match="is present 2 times"):
+            resolve_artifacts(project, bundles=[archive, archive])
+
+    def test_detected_bundle_providing_nothing_is_skipped(
+        self, project: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Should ignore a detected bundle meant for another tool, and say so."""
+        caplog.set_level(logging.INFO, logger="nac_artifacts")
+        (project / ".nac").mkdir()
+        make_zip(
+            project / ".nac/tests-only.zip",
+            split_files("tests-only", **{"tests/templates/a.robot": ""}),
+        )
+        make_zip(project / ".nac/rules.zip", bundle_files(name="rules"))
+
+        layers = resolve_artifacts(project)
+
+        assert [layer.manifest["name"] for layer in layers] == ["rules"]
+        assert "Ignoring bundle tests-only" in caplog.text
+
+    def test_detected_bundle_for_another_tool_alone_gives_no_layer(
+        self, project: Path
+    ) -> None:
+        """Should not fail a tool because .nac/ only holds bundles for another one."""
+        (project / ".nac").mkdir()
+        make_zip(
+            project / ".nac/tests-only.zip",
+            split_files("tests-only", **{"tests/templates/a.robot": ""}),
+        )
+
+        assert resolve_artifacts(project) == []
+
+    def test_explicit_bundle_providing_nothing_is_an_error(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should stay strict for a bundle the user named explicitly."""
+        archive = make_zip(
+            tmp_path / "t.zip", split_files("t", **{"tests/templates/a.robot": ""})
+        )
+
+        with pytest.raises(BundleError, match="contains no"):
+            resolve_artifacts(project, bundle=archive)
+
+    def test_a_missing_explicit_bundle_among_several(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should report which explicit bundle does not exist."""
+        good = make_zip(tmp_path / "g.zip", bundle_files())
+
+        with pytest.raises(BundleError, match="Bundle not found: .*missing.zip"):
+            resolve_artifacts(project, bundles=[good, tmp_path / "missing.zip"])
+
+    def test_name_is_required(self, project: Path, tmp_path: Path) -> None:
+        """Should refuse a manifest without a name."""
+        files = bundle_files()
+        files["manifest.yaml"] = "version: 1.0.0\n"
+
+        with pytest.raises(BundleError, match="'name'.*is required"):
+            resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", files))
+
+    @pytest.mark.parametrize("name", ["''", "'  '", "5", "[a]"])
+    def test_name_must_be_a_non_empty_string(
+        self, project: Path, tmp_path: Path, name: str
+    ) -> None:
+        """Should refuse blank or non-string names."""
+        files = bundle_files()
+        files["manifest.yaml"] = f"name: {name}\n"
+
+        with pytest.raises(BundleError, match="non-empty string"):
+            resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", files))
+
+    def test_overrides_of_one_bundle_do_not_affect_a_peer(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should keep each bundle's overrides on that bundle's own layer."""
+        a = make_zip(
+            tmp_path / "a.zip",
+            bundle_files(
+                name="a", extra={"overrides.yaml": overrides_yaml(rules=["9"])}
+            ),
+        )
+        b = make_zip(tmp_path / "b.zip", bundle_files(name="b"))
+
+        layer_a, layer_b = resolve_artifacts(project, bundles=[a, b])
+
+        assert layer_a.overrides.rules == ("9",)
+        assert layer_b.overrides.is_empty
+
+
+@pytest.fixture
+def nac_dir_with_two_versions(project: Path) -> Path:
+    directory = project / ".nac"
+    directory.mkdir()
+    make_zip(directory / "acme-1.0.0.zip", bundle_files(name="acme", version="1.0.0"))
+    make_zip(directory / "acme-2.0.0.zip", bundle_files(name="acme", version="2.0.0"))
+    return directory

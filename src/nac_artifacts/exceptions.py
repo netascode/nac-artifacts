@@ -21,6 +21,10 @@ class BundleError(ArtifactError):
     """Raised when an artifact bundle is invalid or incompatible."""
 
 
+class OverridesError(ArtifactError):
+    """Raised when an ``overrides.yaml`` is malformed."""
+
+
 class AmbiguousModuleError(ModuleDiscoveryError):
     """Raised when several installed modules provide the requested artifacts.
 

@@ -11,13 +11,14 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-from nac_artifacts import find_module_layer
+from nac_artifacts import find_module_layer, load_overrides
 from nac_artifacts.testing import (
     bundle_files,
     install_module,
     make_tgz,
     make_zip,
     module_entry,
+    overrides_yaml,
     write_files,
     write_modules_json,
 )
@@ -109,3 +110,24 @@ class TestBundles:
             member = tf.extractfile("a/b.txt")
             assert member is not None
             assert member.read() == b"x"
+
+
+class TestOverridesYaml:
+    """Tests for overrides_yaml()."""
+
+    def test_roundtrips_through_the_parser(self, tmp_path: Path) -> None:
+        """Should produce text that load_overrides reads back unchanged."""
+        path = tmp_path / "overrides.yaml"
+        path.write_text(overrides_yaml(rules=["1", "2"], templates=["a/*.robot"]))
+
+        overrides = load_overrides(path)
+
+        assert overrides.rules == ("1", "2")
+        assert overrides.templates == ("a/*.robot",)
+
+    def test_empty(self, tmp_path: Path) -> None:
+        """Should produce a valid file that disables nothing."""
+        path = tmp_path / "overrides.yaml"
+        path.write_text(overrides_yaml())
+
+        assert load_overrides(path).is_empty

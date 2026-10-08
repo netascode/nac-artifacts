@@ -20,6 +20,8 @@ BUNDLE_CACHE_DIR = BUNDLE_DIR / "cache"
 BUNDLE_ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz")
 # Name of an already extracted bundle directory
 BUNDLE_DIRNAME = "bundle"
+# File with disable entries: in .nac/ of a project and at the root of a bundle
+OVERRIDES_FILENAME = "overrides.yaml"
 BUNDLE_MANIFEST_FILENAME = "manifest.yaml"
 BUNDLE_MAX_FILES = 5000
 BUNDLE_MAX_BYTES = 100 * 1024 * 1024
