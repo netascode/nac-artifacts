@@ -111,7 +111,11 @@ def resolve_artifacts(
     module_dir: Path | None = None,
 ) -> list[ArtifactLayer]:
     """Resolve the bundle and module layers (``bundle`` is shorthand for one bundle)."""
-    explicit = list(bundles) if bundles else ([bundle] if bundle is not None else None)
+    explicit = (
+        list(bundles)
+        if bundles is not None
+        else ([bundle] if bundle is not None else None)
+    )
     return resolve_artifact_layers(
         project, provides=provides, bundles=explicit, module_dir=module_dir
     )

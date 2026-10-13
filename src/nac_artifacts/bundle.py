@@ -276,7 +276,9 @@ def _open_bundle(project_dir: Path, bundle: Path) -> ArtifactLayer:
     manifest = _read_manifest(root, bundle)
     version = manifest.get("version")
     detail = f"{version} " if version else ""
-    detail += f"({bundle}" + (f", sha256 {digest[:12]}" if digest else "") + ")"
+    detail += (
+        f"({bundle}" + (f", sha256 {digest[:12]}" if digest is not None else "") + ")"
+    )
     overrides_file = root / OVERRIDES_FILENAME
     overrides = (
         load_overrides(overrides_file, f"{OVERRIDES_FILENAME} in bundle {bundle}")

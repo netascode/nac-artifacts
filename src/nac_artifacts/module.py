@@ -131,7 +131,7 @@ def _module_entry_layer(
     if not provides_any(root, provides):
         return None
     version = entry.get("Version")
-    version = version if isinstance(version, str) else None
+    version = version if isinstance(version, str) and version else None
     label = f"module '{key}'" if key else "root module"
-    label += f" {version}" if version else ""
+    label += f" {version}" if version is not None else ""
     return ArtifactLayer("module", root, version, f"{label} at {root}")
