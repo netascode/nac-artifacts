@@ -6,6 +6,8 @@ updates:
     directory: '/'
     schedule:
       interval: 'daily'
+    cooldown:
+      default-days: 3
 
   # Native uv support updates pyproject.toml and uv.lock in the same pull request
   - package-ecosystem: 'uv'
@@ -14,3 +16,5 @@ updates:
       interval: 'daily'
     allow:
       - dependency-type: 'all'
+    cooldown:
+      default-days: 3
