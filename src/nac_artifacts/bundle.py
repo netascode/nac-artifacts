@@ -21,6 +21,7 @@ from .constants import (
     BUNDLE_ARCHIVE_SUFFIXES,
     BUNDLE_CACHE_DIR,
     BUNDLE_CACHE_KEY_LENGTH,
+    BUNDLE_CACHE_MAX_AGE_SECONDS,
     BUNDLE_DIR,
     BUNDLE_DIRNAME,
     BUNDLE_MANIFEST_FILENAME,
@@ -115,6 +116,45 @@ def _remove_stale_temp_dirs(cache_dir: Path) -> None:
             continue
 
 
+def _is_cache_entry(path: Path) -> bool:
+    """Whether ``path`` is an extracted bundle (named after an archive digest)."""
+    name = path.name
+    return (
+        len(name) == BUNDLE_CACHE_KEY_LENGTH
+        and all(c in "0123456789abcdef" for c in name)
+        and path.is_dir()
+        and not path.is_symlink()
+    )
+
+
+def _remove_unused_entries(cache_dir: Path, keep: Path) -> None:
+    """Delete extracted bundles that have not been used for a long time.
+
+    Every use refreshes an entry's modification time (see ``_touch``), so this
+    removes old bundle versions while entries in use by other runs stay.
+    """
+    cutoff = time.time() - BUNDLE_CACHE_MAX_AGE_SECONDS
+    for entry in cache_dir.iterdir():
+        try:
+            if (
+                entry != keep
+                and _is_cache_entry(entry)
+                and entry.stat().st_mtime < cutoff
+            ):
+                logger.debug("Removing unused bundle cache entry %s", entry)
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _touch(path: Path) -> None:
+    """Mark a cache entry as used; failure (e.g. a read-only cache) is harmless."""
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+
+
 def _sha256_file(path: Path) -> str:
     """Hash a file in chunks so its size never has to fit in memory."""
     digest = hashlib.sha256()
@@ -159,7 +199,9 @@ def _materialize_bundle(project_dir: Path, bundle: Path) -> tuple[Path, str | No
     digest = _sha256_file(bundle)
     cache = project_dir / BUNDLE_CACHE_DIR / digest[:BUNDLE_CACHE_KEY_LENGTH]
     _ensure_cache_dir(cache.parent)
+    _remove_unused_entries(cache.parent, keep=cache)
     if cache.is_dir():
+        _touch(cache)
         return cache, digest
 
     if zipfile.is_zipfile(bundle):
@@ -330,16 +372,17 @@ def find_bundle_layers(
             ``bundle/``).
 
     Returns:
-        The bundle layers that provide at least one of ``provides``. Bundles
-        found in ``.nac/`` that provide none of them are skipped (they may be
-        meant for another tool); explicitly given bundles that provide none
-        are an error.
+        The bundle layers that provide at least one of ``provides`` or disable
+        something in an ``overrides.yaml``. Bundles found in ``.nac/`` with
+        neither are skipped (they may be meant for another tool); explicitly
+        given bundles with neither are an error.
 
     Raises:
         TypeError: If ``provides`` is a single string.
         ValueError: If ``provides`` is empty or has an invalid path.
-        BundleError: If an explicitly given bundle is missing or provides
-            nothing, a bundle is unsafe or invalid, or two bundles share a name.
+        BundleError: If an explicitly given bundle is missing or has neither
+            artifacts nor overrides, a bundle is unsafe or invalid, or two
+            bundles share a name.
     """
     paths = validate_provides(provides)
     project_dir = project_dir.resolve()
@@ -354,12 +397,19 @@ def find_bundle_layers(
 
     layers: list[ArtifactLayer] = []
     for bundle, layer in opened:
-        if provides_any(layer.root, paths):
+        # A bundle that only disables artifacts of the module still applies
+        if provides_any(layer.root, paths) or not layer.overrides.is_empty:
             layers.append(layer)
         elif explicit:
-            raise BundleError(f"Bundle {bundle} contains no {describe_paths(paths)}")
+            raise BundleError(
+                f"Bundle {bundle} contains no {describe_paths(paths)} "
+                f"and no {OVERRIDES_FILENAME}"
+            )
         else:
             logger.info(
-                "Ignoring %s: it provides no %s", layer.label, describe_paths(paths)
+                "Ignoring %s: it provides no %s and no %s",
+                layer.label,
+                describe_paths(paths),
+                OVERRIDES_FILENAME,
             )
     return layers

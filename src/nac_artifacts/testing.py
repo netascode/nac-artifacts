@@ -10,13 +10,24 @@ stated otherwise.
 """
 
 import json
+import os
 import tarfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
 
-from .constants import ARTIFACTS_DIRNAME, BUNDLE_MANIFEST_FILENAME
+from .constants import (
+    ARTIFACTS_DIRNAME,
+    BUNDLE_MANIFEST_FILENAME,
+    TERRAFORM_DEFAULT_DATA_DIR,
+    TERRAFORM_MODULES_MANIFEST,
+)
+
+
+def _data_dir(data_dir: str | None) -> str:
+    """The Terraform data directory: ``data_dir``, ``TF_DATA_DIR`` or the default."""
+    return data_dir or os.environ.get("TF_DATA_DIR") or str(TERRAFORM_DEFAULT_DATA_DIR)
 
 
 def write_files(root: Path, files: Mapping[str, str]) -> Path:
@@ -40,10 +51,17 @@ def module_entry(
 
 
 def write_modules_json(
-    project: Path, entries: list[dict[str, str]], data_dir: str = ".terraform"
+    project: Path, entries: list[dict[str, str]], data_dir: str | None = None
 ) -> None:
-    """Write a ``modules.json`` with the root module entry plus ``entries``."""
-    manifest = project / data_dir / "modules" / "modules.json"
+    """Write a ``modules.json`` with the root module entry plus ``entries``.
+
+    Args:
+        project: Project (root module) directory.
+        entries: Module entries, e.g. from ``module_entry``.
+        data_dir: Terraform data directory, relative to ``project`` or absolute.
+            Defaults to ``TF_DATA_DIR`` if set, else ``.terraform``.
+    """
+    manifest = project / _data_dir(data_dir) / TERRAFORM_MODULES_MANIFEST
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         json.dumps({"Modules": [{"Key": "", "Source": "", "Dir": "."}, *entries]})
@@ -56,22 +74,26 @@ def install_module(
     *,
     key: str = "m",
     version: str | None = None,
+    data_dir: str | None = None,
 ) -> Path:
-    """Install a module below ``.terraform/modules`` and register it.
+    """Install a module below ``<data dir>/modules`` and register it.
 
     Args:
         project: Project (root module) directory.
         files: Artifacts to create, relative to the module's ``nac/`` directory.
         key: Module key in ``modules.json``.
         version: Module version recorded in ``modules.json``, if any.
+        data_dir: Terraform data directory, relative to ``project`` or absolute.
+            Defaults to ``TF_DATA_DIR`` if set, else ``.terraform``.
 
     Returns:
         The module directory (the one containing ``nac/``).
     """
-    directory = f".terraform/modules/{key}"
+    data = _data_dir(data_dir)
+    directory = (Path(data) / "modules" / key).as_posix()
     module_dir = project / directory
     write_files(module_dir / ARTIFACTS_DIRNAME, files)
-    write_modules_json(project, [module_entry(key, directory, version)])
+    write_modules_json(project, [module_entry(key, directory, version)], data)
     return module_dir
 
 
@@ -87,13 +109,18 @@ def bundle_files(
 
     Args:
         files: Artifacts, relative to the bundle's ``nac/`` directory.
-        name: Bundle name in the manifest.
-        version: Bundle version in the manifest.
+        name: Bundle name in the manifest (written quoted).
+        version: Bundle version in the manifest (written quoted, so ``"1.10"``
+            stays a string).
         manifest_extra: Raw YAML appended to the manifest.
         extra: Additional archive members, keyed by their exact archive path.
     """
     content: dict[str, str] = {
-        BUNDLE_MANIFEST_FILENAME: f"name: {name}\nversion: {version}\n{manifest_extra}"
+        # JSON strings are valid YAML scalars and keep their quotes
+        BUNDLE_MANIFEST_FILENAME: (
+            f"name: {json.dumps(name)}\nversion: {json.dumps(version)}\n"
+            f"{manifest_extra}"
+        )
     }
     for rel, text in files.items():
         content[f"{ARTIFACTS_DIRNAME}/{rel}"] = text

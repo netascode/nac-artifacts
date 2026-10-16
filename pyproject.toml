@@ -50,6 +50,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/nac_artifacts"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src/nac_artifacts", "tests", "CHANGELOG.md", "README.md"]
+
 [tool.coverage.run]
 source = ["nac_artifacts"]
 

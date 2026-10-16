@@ -34,3 +34,6 @@ BUNDLE_REPLACE_ATTEMPTS = 5
 BUNDLE_REPLACE_DELAY_SECONDS = 0.1
 # Extraction directories older than this are leftovers of killed processes
 BUNDLE_STALE_TEMP_SECONDS = 3600
+# Cache entries not used for this long (typically old bundle versions) are removed;
+# a bundle that is still present is simply extracted again on its next use
+BUNDLE_CACHE_MAX_AGE_SECONDS = 30 * 24 * 3600

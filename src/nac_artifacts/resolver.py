@@ -90,7 +90,9 @@ def resolve_artifact_layers(
     Args:
         project_dir: Project directory.
         provides: Paths relative to ``nac/`` of which a layer must have at
-            least one to be used. Lets each tool select the layers relevant to it.
+            least one to be used (a bundle whose ``overrides.yaml`` disables
+            something is always used). Lets each tool select the layers
+            relevant to it.
         bundles: Explicit bundle archives or directories (replace auto-detection).
         module_dir: Explicit module directory.
 

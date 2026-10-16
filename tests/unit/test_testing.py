@@ -11,6 +11,9 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+import pytest
+from ruamel.yaml import YAML
+
 from nac_artifacts import find_module_layer, load_overrides
 from nac_artifacts.testing import (
     bundle_files,
@@ -41,6 +44,10 @@ class TestWriteFiles:
 
 class TestModulesJson:
     """Tests for module_entry(), write_modules_json() and install_module()."""
+
+    @pytest.fixture(autouse=True)
+    def _no_tf_data_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TF_DATA_DIR", raising=False)
 
     def test_module_entry_without_version(self) -> None:
         """Should omit Version when none is given."""
@@ -75,6 +82,39 @@ class TestModulesJson:
         assert layer.root == module_dir.resolve()
         assert layer.version == "0.3.0"
 
+    def test_write_modules_json_honours_tf_data_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should default to TF_DATA_DIR like terraform init does."""
+        monkeypatch.setenv("TF_DATA_DIR", "custom")
+
+        write_modules_json(tmp_path, [])
+
+        assert (tmp_path / "custom/modules/modules.json").is_file()
+
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_install_module_honours_tf_data_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, absolute: bool
+    ) -> None:
+        """Should install below TF_DATA_DIR so discovery finds the module."""
+        data_dir = str(tmp_path / "elsewhere") if absolute else "custom"
+        monkeypatch.setenv("TF_DATA_DIR", data_dir)
+        project = tmp_path / "project"
+
+        module_dir = install_module(project, {"schema.yaml": "a: str()\n"})
+
+        layer = find_module_layer(project, provides=("schema.yaml",))
+        assert layer is not None
+        assert layer.root == module_dir.resolve()
+        assert module_dir.resolve() == (project / data_dir / "modules/m").resolve()
+
+    def test_install_module_explicit_data_dir(self, tmp_path: Path) -> None:
+        """Should install below an explicit data directory."""
+        module_dir = install_module(tmp_path, {"schema.yaml": "x"}, data_dir="dd")
+
+        assert module_dir == tmp_path / "dd/modules/m"
+        assert (tmp_path / "dd/modules/modules.json").is_file()
+
 
 class TestBundles:
     """Tests for bundle_files(), make_zip() and make_tgz()."""
@@ -84,7 +124,15 @@ class TestBundles:
         files = bundle_files({"schema.yaml": "x"}, name="acme", version="2.0.0")
 
         assert files["nac/schema.yaml"] == "x"
-        assert files["manifest.yaml"] == "name: acme\nversion: 2.0.0\n"
+        assert files["manifest.yaml"] == 'name: "acme"\nversion: "2.0.0"\n'
+
+    @pytest.mark.parametrize("value", ["1.10", "1", "true", "null", "a: b"])
+    def test_bundle_files_manifest_values_stay_strings(self, value: str) -> None:
+        """Should quote name and version so YAML cannot turn them into other types."""
+        files = bundle_files({}, name=value, version=value)
+
+        manifest = YAML(typ="safe").load(files["manifest.yaml"])
+        assert manifest == {"name": value, "version": value}
 
     def test_bundle_files_manifest_extra_and_raw_members(self) -> None:
         """Should append manifest YAML and keep extra archive paths verbatim."""

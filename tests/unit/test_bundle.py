@@ -22,14 +22,20 @@ from nac_artifacts import (
     ArtifactError,
     ArtifactLayer,
     BundleError,
+    DisableEntry,
     OverridesError,
     find_bundle_layers,
+    layer_disables,
 )
 from nac_artifacts.bundle import _sha256_file
-from nac_artifacts.constants import BUNDLE_REPLACE_ATTEMPTS
+from nac_artifacts.constants import (
+    BUNDLE_CACHE_MAX_AGE_SECONDS,
+    BUNDLE_REPLACE_ATTEMPTS,
+)
 from nac_artifacts.testing import overrides_yaml
 from tests.unit.helpers import (
     bundle_files,
+    install_module,
     make_tgz,
     make_zip,
     resolve_artifacts,
@@ -203,7 +209,7 @@ class TestBundleSource:
         """Should raise when the bundle has neither schema nor rules."""
         archive = make_zip(tmp_path / "b.zip", {"manifest.yaml": "name: x\n"})
 
-        with pytest.raises(BundleError, match="contains no"):
+        with pytest.raises(BundleError, match="contains no .* and no overrides.yaml"):
             resolve_artifacts(project, bundle=archive)
 
     def test_not_an_archive(self, project: Path, tmp_path: Path) -> None:
@@ -592,6 +598,121 @@ class TestExtractionHousekeeping:
         assert (layer.nac_dir / "schema.yaml").is_file()
 
 
+class TestCachePruning:
+    """Tests for removing cache entries that are no longer used."""
+
+    @staticmethod
+    def _age(path: Path, seconds: float) -> None:
+        old = time.time() - seconds
+        os.utime(path, (old, old))
+
+    def test_unused_entries_are_removed(self, project: Path, tmp_path: Path) -> None:
+        """Should delete extracted bundles not used within the maximum age."""
+        old = resolve_artifacts(
+            project, bundle=make_zip(tmp_path / "old.zip", bundle_files("1.0.0"))
+        )[0].root
+        self._age(old, BUNDLE_CACHE_MAX_AGE_SECONDS + 60)
+
+        new = resolve_artifacts(
+            project, bundle=make_zip(tmp_path / "new.zip", bundle_files("2.0.0"))
+        )[0].root
+
+        assert not old.exists()
+        assert new.is_dir()
+
+    def test_recently_used_entries_are_kept(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should keep entries used within the maximum age, e.g. by another run."""
+        other = resolve_artifacts(
+            project, bundle=make_zip(tmp_path / "a.zip", bundle_files("1.0.0"))
+        )[0].root
+        self._age(other, BUNDLE_CACHE_MAX_AGE_SECONDS - 3600)
+
+        resolve_artifacts(
+            project, bundle=make_zip(tmp_path / "b.zip", bundle_files("2.0.0"))
+        )
+
+        assert other.is_dir()
+
+    def test_cache_hit_refreshes_the_entry(self, project: Path, tmp_path: Path) -> None:
+        """Should mark a reused entry as used so it is not pruned while in use."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files())
+        entry = resolve_artifacts(project, bundle=archive)[0].root
+        self._age(entry, BUNDLE_CACHE_MAX_AGE_SECONDS + 60)
+
+        assert resolve_artifacts(project, bundle=archive)[0].root == entry
+        assert entry.stat().st_mtime > time.time() - 60
+
+    def test_only_digest_named_directories_are_removed(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should leave files and directories that are not cache entries alone."""
+        cache = project / ".nac/cache"
+        foreign = [cache / "notes", cache / ("g" * 32), cache / ("a" * 31)]
+        for path in foreign:
+            path.mkdir(parents=True)
+            self._age(path, BUNDLE_CACHE_MAX_AGE_SECONDS + 60)
+        stray = cache / ("b" * 32)
+        stray.write_text("not a directory")
+        self._age(stray, BUNDLE_CACHE_MAX_AGE_SECONDS + 60)
+
+        resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", bundle_files()))
+
+        assert all(path.exists() for path in [*foreign, stray])
+        assert (cache / ".gitignore").is_file()
+
+    def test_symlinked_entries_are_not_followed(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should not delete the target of a symlink named like a cache entry."""
+        target = tmp_path / "target"
+        (target / "keep").mkdir(parents=True)
+        cache = project / ".nac/cache"
+        cache.mkdir(parents=True)
+        try:
+            (cache / ("c" * 32)).symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks cannot be created on this system")
+        self._age(target, BUNDLE_CACHE_MAX_AGE_SECONDS + 60)
+
+        resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", bundle_files()))
+
+        assert (target / "keep").is_dir()
+
+    def test_unremovable_entries_are_skipped(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should not fail when an entry cannot be inspected."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files())
+        entry = resolve_artifacts(project, bundle=archive)[0].root
+        real_stat = Path.stat
+
+        def failing_stat(self: Path, **kwargs: bool) -> os.stat_result:
+            if self.name == ("d" * 32):
+                raise PermissionError("denied")
+            return real_stat(self, **kwargs)
+
+        (project / ".nac/cache" / ("d" * 32)).mkdir()
+        monkeypatch.setattr(Path, "stat", failing_stat)
+
+        assert resolve_artifacts(project, bundle=archive)[0].root == entry
+
+    def test_failure_to_refresh_is_harmless(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should still use a cache entry whose timestamp cannot be updated."""
+        archive = make_zip(tmp_path / "b.zip", bundle_files())
+        entry = resolve_artifacts(project, bundle=archive)[0].root
+
+        def failing_utime(*args: object, **kwargs: object) -> None:
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr("nac_artifacts.bundle.os.utime", failing_utime)
+
+        assert resolve_artifacts(project, bundle=archive)[0].root == entry
+
+
 class TestCacheLocation:
     """Tests for the cache directory name."""
 
@@ -846,6 +967,60 @@ class TestDefaultBundleDetection:
 
 class TestBundleOverrides:
     """Tests for the overrides.yaml shipped at the root of a bundle."""
+
+    @staticmethod
+    def _overrides_only(**disable: list[str]) -> dict[str, str]:
+        return {
+            "manifest.yaml": "name: tweaks\nversion: '1.0.0'\n",
+            "overrides.yaml": overrides_yaml(**disable),
+        }
+
+    def test_overrides_only_bundle_is_used_when_explicit(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should accept a bundle that only disables artifacts of the module."""
+        archive = make_zip(tmp_path / "b.zip", self._overrides_only(rules=["102"]))
+
+        layers = resolve_artifacts(project, bundle=archive)
+
+        assert [layer.label for layer in layers] == ["bundle tweaks"]
+        assert layers[0].overrides.rules == ("102",)
+        assert not layers[0].nac_dir.exists()
+
+    def test_overrides_only_bundle_is_used_when_detected(self, project: Path) -> None:
+        """Should not skip an auto-detected bundle that only has overrides."""
+        (project / ".nac").mkdir()
+        make_zip(project / ".nac/tweaks.zip", self._overrides_only(templates=["a/*"]))
+
+        layers = resolve_artifacts(project)
+
+        assert [layer.overrides.templates for layer in layers] == [("a/*",)]
+
+    def test_overrides_only_bundle_disables_module_artifacts(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should apply the bundle's entries to the module below it."""
+        install_module(project, rules={"102": "module rule"})
+        archive = make_zip(tmp_path / "b.zip", self._overrides_only(rules=["102"]))
+
+        layers = resolve_artifacts(project, bundle=archive)
+        disables = layer_disables(project, layers)
+
+        assert [layer.origin for layer in layers] == ["bundle", "module"]
+        assert disables[1].rules == (DisableEntry("102", "bundle tweaks"),)
+
+    def test_bundle_with_empty_overrides_and_no_artifacts_is_skipped(
+        self, project: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Should still skip a detected bundle whose overrides disable nothing."""
+        (project / ".nac").mkdir()
+        make_zip(project / ".nac/tweaks.zip", self._overrides_only())
+
+        with caplog.at_level(logging.INFO, logger="nac_artifacts.bundle"):
+            assert resolve_artifacts(project) == []
+        assert "provides no nac/schema.yaml or nac/rules and no overrides.yaml" in (
+            caplog.text
+        )
 
     def test_overrides_are_loaded_from_an_archive(
         self, project: Path, tmp_path: Path

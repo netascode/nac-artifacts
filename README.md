@@ -73,11 +73,14 @@ module:                   # optional
   would otherwise keep providing artifacts the new one dropped or renamed.
 - **Bundles for other tools:** a bundle found in `.nac/` that provides nothing the
   calling tool uses is skipped (logged at INFO). A bundle passed explicitly that
-  provides nothing is an error.
+  provides nothing is an error. A bundle with an `overrides.yaml` that disables
+  something always counts, even without any artifacts of its own, so a bundle can
+  consist of nothing but a manifest and an `overrides.yaml`.
 - **Safety:** archives are checked before extraction (no absolute or `..`
   paths, no symlinks or special files, limits on archive size, extracted size
   and file count). Extraction is atomic and cached by the archive's sha256;
-  cache contents are trusted without being verified again.
+  cache contents are trusted without being verified again. Cache entries not
+  used for 30 days (typically old bundle versions) are removed.
 - **Trust:** bundles usually contain code that the tools execute (validation
   rules, Jinja filters), so a bundle needs the same trust as code in your own
   repository.
@@ -138,8 +141,9 @@ for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
     print(matcher.unmatched())  # entries that matched nothing, for reporting
 ```
 
-- A layer is used only if it has at least one of the `provides` paths, so each
-  tool picks the layers relevant to it. `provides` must be a non-empty sequence
+- A layer is used only if it has at least one of the `provides` paths (or, for a
+  bundle, an `overrides.yaml` that disables something), so each tool picks the
+  layers relevant to it. A layer may therefore lack some or all of the paths. `provides` must be a non-empty sequence
   of paths relative to `nac/` (a plain string is rejected).
 - Modules are found through the `modules.json` that `terraform init` and
   `tofu init` write (honouring `TF_DATA_DIR`). Only the root module and the
