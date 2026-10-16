@@ -221,6 +221,20 @@ class TestBundleSource:
             resolve_artifacts(project, bundle=junk)
 
 
+def make_raw_zip(path: Path, files: dict[str, str]) -> Path:
+    """Write a zip keeping member names verbatim.
+
+    ``zipfile`` turns "\\" into "/" when writing on Windows, so the names are set
+    after the ``ZipInfo`` is created to get the same archive on every platform.
+    """
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in files.items():
+            info = zipfile.ZipInfo("placeholder")
+            info.filename = info.orig_filename = name
+            archive.writestr(info, content)
+    return path
+
+
 class TestBundleExtractionSafety:
     """Tests that hostile archives are rejected without leaving files behind."""
 
@@ -234,16 +248,52 @@ class TestBundleExtractionSafety:
             "C:/evil.txt",
             "\\\\server\\share\\x",
             "..\\evil.txt",
+            "a\\..\\..\\evil",
         ],
     )
     def test_zip_path_traversal_rejected(
         self, project: Path, tmp_path: Path, name: str
     ) -> None:
         """Should reject zip members that escape the extraction directory."""
-        archive = make_zip(tmp_path / "b.zip", bundle_files(extra={name: "x"}))
+        archive = make_raw_zip(tmp_path / "b.zip", bundle_files(extra={name: "x"}))
 
         with pytest.raises(BundleError, match="Unsafe path"):
             resolve_artifacts(project, bundle=archive)
+
+    def test_zip_with_backslash_separators(self, project: Path, tmp_path: Path) -> None:
+        """Should extract "\\" separated names (Windows tools) the same on every OS."""
+        archive = make_raw_zip(
+            tmp_path / "b.zip",
+            {
+                "manifest.yaml": "name: acme\n",
+                "nac\\": "",
+                "nac\\schema.yaml": "a: str()\n",
+                "nac\\rules\\1.py": "# rule\n",
+            },
+        )
+
+        layer = resolve_artifacts(project, bundle=archive)[0]
+
+        files = sorted(
+            p.relative_to(layer.root).as_posix()
+            for p in layer.root.rglob("*")
+            if p.is_file()
+        )
+        assert files == ["manifest.yaml", "nac/rules/1.py", "nac/schema.yaml"]
+
+    def test_zip_with_backslash_folder_prefix(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should find the manifest below a zipped folder written with "\\"."""
+        archive = make_raw_zip(
+            tmp_path / "b.zip",
+            {"acme\\manifest.yaml": "name: acme\n", "acme\\nac\\schema.yaml": "x"},
+        )
+
+        layer = resolve_artifacts(project, bundle=archive)[0]
+
+        assert layer.root.name == "acme"
+        assert (layer.nac_dir / "schema.yaml").is_file()
 
     def test_tar_path_traversal_rejected(self, project: Path, tmp_path: Path) -> None:
         """Should reject tar members that escape the extraction directory."""

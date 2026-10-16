@@ -68,10 +68,14 @@ def _extract_zip(archive: Path, target: Path) -> None:
         infos = zf.infolist()
         _check_limits(len(infos), sum(i.file_size for i in infos))
         for info in infos:
+            # Some Windows tools (e.g. Compress-Archive in Windows PowerShell 5.1)
+            # write "\" separators, which zipfile only splits on Windows; normalize
+            # them so the bundle extracts to the same layout on every platform
+            info.filename = info.filename.replace("\\", "/")
             _check_member_name(info.filename)
             if (info.external_attr >> 16) & 0o170000 == 0o120000:
                 raise BundleError(f"Symlink in bundle not allowed: {info.filename}")
-        zf.extractall(target)  # nosec B202 - members vetted above
+        zf.extractall(target, members=infos)  # nosec B202 - members vetted above
 
 
 def _extract_tar(archive: Path, target: Path) -> None:
