@@ -872,6 +872,33 @@ class TestDefaultBundleDetection:
         directory.mkdir()
         return directory
 
+    def test_empty_bundles_means_auto_detection(
+        self, project: Path, nac_dir: Path
+    ) -> None:
+        """Should treat an empty bundles sequence like None (e.g. no CLI options)."""
+        make_zip(nac_dir / "b.zip", bundle_files())
+
+        layers = find_bundle_layers(project, provides=("schema.yaml",), bundles=[])
+
+        assert [layer.label for layer in layers] == ["bundle acme"]
+
+    def test_relative_bundle_is_relative_to_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should resolve a relative bundle path against the cwd, not project_dir."""
+        project, cwd = tmp_path / "project", tmp_path / "cwd"
+        project.mkdir()
+        cwd.mkdir()
+        make_zip(cwd / "b.zip", bundle_files())
+        monkeypatch.chdir(cwd)
+
+        layers = find_bundle_layers(
+            project, provides=("schema.yaml",), bundles=[Path("b.zip")]
+        )
+
+        assert [layer.label for layer in layers] == ["bundle acme"]
+        assert layers[0].root.is_relative_to(project.resolve() / ".nac/cache")
+
     def test_versioned_architecture_file_name(
         self, project: Path, nac_dir: Path
     ) -> None:

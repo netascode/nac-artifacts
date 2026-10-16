@@ -369,7 +369,9 @@ def find_bundle_layers(
             least one to be used.
         bundles: Use these archives or directories instead of the ones found
             in ``.nac/`` (any ``.zip``, ``.tar.gz`` or ``.tgz`` file, or
-            ``bundle/``).
+            ``bundle/``). None or an empty sequence means auto-detection.
+            Relative paths are resolved against the current working
+            directory, not ``project_dir``.
 
     Returns:
         The bundle layers that provide at least one of ``provides`` or disable

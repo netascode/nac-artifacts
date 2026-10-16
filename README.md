@@ -149,9 +149,13 @@ for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
   `tofu init` write (honouring `TF_DATA_DIR`). Only the root module and the
   modules it calls directly are considered. If several provide the requested
   paths, `AmbiguousModuleError` lists them; pass `module_dir` to select one.
-- Explicit `module_dir` and `bundle` paths are returned as absolute paths.
-- Bundles are found in `.nac/`, or pass `bundles`. Archives are
-  extracted once into `.nac/cache/`, which ignores itself in git.
+- Explicit `module_dir` and `bundles` paths are returned as absolute paths.
+  Relative ones are resolved against the current working directory (as for
+  command line arguments), not against `project_dir`.
+- Bundles are found in `.nac/`, or pass `bundles`. `None` and an empty sequence
+  both mean auto-detection, so forwarding an empty list of command line options
+  keeps the default. Archives are extracted once into `.nac/cache/`, which
+  ignores itself in git.
 - Failures raise `ArtifactError` subclasses (`ModuleDiscoveryError`,
   `AmbiguousModuleError`, `BundleError`).
 

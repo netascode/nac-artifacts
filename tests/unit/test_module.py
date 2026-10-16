@@ -253,6 +253,22 @@ class TestExplicitModuleDir:
         assert layer.root.is_absolute()
         assert layer.root == (project / "mod").resolve()
 
+    def test_relative_module_dir_is_relative_to_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should resolve a relative module_dir against the cwd, not project_dir."""
+        project, cwd = tmp_path / "project", tmp_path / "cwd"
+        project.mkdir()
+        write_artifacts(cwd / "mod")
+        monkeypatch.chdir(cwd)
+
+        layer = find_module_layer(
+            project, provides=("schema.yaml",), module_dir=Path("mod")
+        )
+
+        assert layer is not None
+        assert layer.root == (cwd / "mod").resolve()
+
 
 class TestFindModuleLayer:
     """Tests for find_module_layer() used directly."""

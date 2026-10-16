@@ -83,7 +83,9 @@ def find_module_layer(
         project_dir: Project (root module) directory.
         provides: Paths relative to ``nac/`` of which a module must have at
             least one to count as an artifact provider.
-        module_dir: Use this module directory instead of discovering one.
+        module_dir: Use this module directory instead of discovering one. A
+            relative path is resolved against the current working directory,
+            not ``project_dir``.
 
     Returns:
         The module layer, or None if no installed module provides artifacts.
