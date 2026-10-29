@@ -38,7 +38,7 @@ from .overrides import Overrides, load_overrides
 
 logger = logging.getLogger(__name__)
 
-# Extraction filters were added to tarfile in 3.12 and backported to 3.10.12+
+# Extraction filters were added to tarfile in 3.12 and backported to 3.11.4+
 _TAR_FILTERS_SUPPORTED = hasattr(tarfile, "data_filter")
 
 

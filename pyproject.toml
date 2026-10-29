@@ -10,7 +10,7 @@ authors = [
 maintainers = [
     { name = "Daniel Schmidt", email = "danischm@cisco.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["terraform", "opentofu", "artifacts", "nac", "network-as-code"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -18,7 +18,6 @@ classifiers = [
     "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -63,13 +62,13 @@ exclude_lines = ["pragma: no cover", "@abstract", "except ImportError:"]
 markers = ["unit", "integration"]
 
 [tool.ty.environment]
-python-version = "3.10"
+python-version = "3.11"
 
 [tool.ty.rules]
 "all" = "error"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
