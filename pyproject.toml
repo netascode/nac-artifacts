@@ -1,6 +1,6 @@
 [project]
 name = "nac-artifacts"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Python library to discover and layer the schema, rules and test artifacts packaged with Network-as-Code modules and bundles."
 license = { text = "MPL-2.0" }
 readme = "README.md"
