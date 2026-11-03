@@ -126,7 +126,7 @@ class TestProvides:
         """Should accept a tests-only bundle when the caller asks for tests."""
         files = {
             "manifest.yaml": "name: tests-only\n",
-            "nac/tests/templates/a.robot": "*** Test Cases ***\n",
+            "tests/templates/a.robot": "*** Test Cases ***\n",
         }
         archive = make_zip(tmp_path / "b.zip", files)
 
@@ -344,9 +344,9 @@ class TestLayerDisables:
     def test_reads_project_and_bundle_overrides(
         self, project: Path, tmp_path: Path
     ) -> None:
-        """Should combine .nac/overrides.yaml with a bundle's overrides.yaml."""
+        """Should combine nac/overrides.yaml with a bundle's overrides.yaml."""
         install_module(project)
-        write_files(project / ".nac", {"overrides.yaml": overrides_yaml(rules=["1"])})
+        write_files(project / "nac", {"overrides.yaml": overrides_yaml(rules=["1"])})
         archive = make_zip(
             tmp_path / "b.zip",
             bundle_files(extra={"overrides.yaml": overrides_yaml(rules=["2"])}),

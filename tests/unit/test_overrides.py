@@ -162,23 +162,23 @@ class TestValidation:
 
 
 class TestProjectOverrides:
-    """Tests for .nac/overrides.yaml of a project."""
+    """Tests for nac/overrides.yaml of a project."""
 
     def test_missing_file_means_no_overrides(self, tmp_path: Path) -> None:
         """Should return no overrides without a file."""
         assert load_project_overrides(tmp_path).is_empty
 
     def test_reads_the_file_from_the_nac_directory(self, tmp_path: Path) -> None:
-        """Should read .nac/overrides.yaml."""
-        write_files(tmp_path / ".nac", {"overrides.yaml": overrides_yaml(rules=["5"])})
+        """Should read nac/overrides.yaml."""
+        write_files(tmp_path / "nac", {"overrides.yaml": overrides_yaml(rules=["5"])})
 
         assert load_project_overrides(tmp_path).rules == ("5",)
 
     def test_errors_name_the_project_file(self, tmp_path: Path) -> None:
-        """Should point at .nac/overrides.yaml in messages."""
-        write_files(tmp_path / ".nac", {"overrides.yaml": "- x\n"})
+        """Should point at nac/overrides.yaml in messages."""
+        write_files(tmp_path / "nac", {"overrides.yaml": "- x\n"})
 
-        with pytest.raises(OverridesError, match=r"\.nac.overrides\.yaml"):
+        with pytest.raises(OverridesError, match=r"nac/overrides\.yaml"):
             load_project_overrides(tmp_path)
 
     def test_logs_what_the_project_disables(
@@ -187,7 +187,7 @@ class TestProjectOverrides:
         """Should log a summary at INFO level."""
         caplog.set_level(logging.INFO, logger="nac_artifacts")
         write_files(
-            tmp_path / ".nac",
+            tmp_path / "nac",
             {"overrides.yaml": overrides_yaml(rules=["1", "2"], templates=["a"])},
         )
 

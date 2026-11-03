@@ -89,8 +89,8 @@ def resolve_artifact_layers(
 
     Args:
         project_dir: Project directory.
-        provides: Paths relative to ``nac/`` of which a layer must have at
-            least one to be used (a bundle whose ``overrides.yaml`` disables
+        provides: Paths relative to a module's ``nac/`` directory or a
+            bundle's root of which a layer must have at least one to be used (a bundle whose ``overrides.yaml`` disables
             something is always used). Lets each tool select the layers
             relevant to it.
         bundles: Explicit bundle archives or directories (replace auto-detection).
@@ -139,7 +139,7 @@ def disables_by_layer(
     never affected.
 
     Args:
-        project: Entries from ``.nac/overrides.yaml``.
+        project: Entries from ``nac/overrides.yaml``.
         layers: Resolved layers, highest priority first.
 
     Returns:
@@ -167,7 +167,7 @@ def layer_disables(
     """Read the project's ``overrides.yaml`` and work out what applies to each layer.
 
     Args:
-        project_dir: Project directory holding ``.nac/``.
+        project_dir: Project directory holding ``nac/``.
         layers: Resolved layers, highest priority first.
 
     Raises:

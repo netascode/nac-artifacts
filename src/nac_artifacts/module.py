@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import (
+    ARTIFACTS_DIRNAME,
     TERRAFORM_DEFAULT_DATA_DIR,
     TERRAFORM_MODULES_MANIFEST,
 )
@@ -34,7 +35,9 @@ def find_installed_modules(
     Args:
         project_dir: Project (root module) directory.
         provides: Paths relative to ``nac/`` of which a module must have at
-            least one. With None, any module with a ``nac/`` directory counts.
+            least one. With None, any module with a non-empty ``nac/``
+            directory counts (for the root module, a ``nac/`` holding only
+            the project's bundles and overrides does not).
 
     Returns:
         The matching modules, without duplicates (several module calls can share
@@ -100,7 +103,7 @@ def find_module_layer(
     if module_dir is not None:
         if not module_dir.is_dir():
             raise ModuleDiscoveryError(f"Module directory not found: {module_dir}")
-        if not provides_any(module_dir, paths):
+        if not provides_any(module_dir / ARTIFACTS_DIRNAME, paths):
             raise ModuleDiscoveryError(
                 f"No {describe_paths(paths)} found in {module_dir}"
             )
@@ -130,7 +133,7 @@ def _module_entry_layer(
     if not root.is_dir():
         missing.append(f"'{key}' ({root})")
         return None
-    if not provides_any(root, provides):
+    if not provides_any(root / ARTIFACTS_DIRNAME, provides):
         return None
     version = entry.get("Version")
     version = version if isinstance(version, str) and version else None

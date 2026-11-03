@@ -5,8 +5,9 @@
 
 These create the on-disk shapes the discovery code reads: installed modules
 (with the ``modules.json`` Terraform writes) and bundles as zip or tar.gz
-archives. File maps are keyed by path relative to the ``nac/`` directory unless
-stated otherwise.
+archives. File maps are keyed by path relative to the directory holding the
+artifacts (a module's ``nac/`` directory, a bundle's root) unless stated
+otherwise.
 """
 
 import json
@@ -108,7 +109,7 @@ def bundle_files(
     """Return the archive content of a bundle.
 
     Args:
-        files: Artifacts, relative to the bundle's ``nac/`` directory.
+        files: Artifacts, relative to the bundle root.
         name: Bundle name in the manifest (written quoted).
         version: Bundle version in the manifest (written quoted, so ``"1.10"``
             stays a string).
@@ -122,10 +123,8 @@ def bundle_files(
             f"{manifest_extra}"
         )
     }
-    for rel, text in files.items():
-        content[f"{ARTIFACTS_DIRNAME}/{rel}"] = text
-    for archive_path, text in (extra or {}).items():
-        content[archive_path] = text
+    content.update(files)
+    content.update(extra or {})
     return content
 
 

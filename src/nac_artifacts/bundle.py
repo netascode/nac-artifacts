@@ -23,13 +23,13 @@ from .constants import (
     BUNDLE_CACHE_KEY_LENGTH,
     BUNDLE_CACHE_MAX_AGE_SECONDS,
     BUNDLE_DIR,
-    BUNDLE_DIRNAME,
     BUNDLE_MANIFEST_FILENAME,
     BUNDLE_MAX_BYTES,
     BUNDLE_MAX_FILES,
     BUNDLE_REPLACE_ATTEMPTS,
     BUNDLE_REPLACE_DELAY_SECONDS,
     BUNDLE_STALE_TEMP_SECONDS,
+    BUNDLE_UNSUPPORTED_ARCHIVE_SUFFIXES,
     OVERRIDES_FILENAME,
 )
 from .exceptions import BundleError
@@ -292,27 +292,34 @@ def _validate_manifest(manifest: dict[str, Any], bundle: Path) -> None:
 
 
 def _default_bundles(project_dir: Path) -> list[Path]:
-    """List bundles dropped into ``.nac/``, sorted by name.
+    """List bundles dropped into ``nac/bundles/``, sorted by name.
 
-    Any archive with a supported extension counts, whatever its name, as does
-    a ``bundle/`` directory. Hidden entries and other directories (such as the
-    cache) are ignored.
+    Every archive with a supported extension and every directory is a bundle,
+    whatever its name. Hidden entries (such as the cache) and other files (such
+    as notes or checksums) are ignored.
+
+    Raises:
+        BundleError: If the directory holds an archive of an unsupported type,
+            so that a bundle meant to be used is not silently skipped.
     """
     bundle_dir = project_dir / BUNDLE_DIR
     if not bundle_dir.is_dir():
         return []
-    return sorted(
-        (
-            p
-            for p in bundle_dir.iterdir()
-            if not p.name.startswith(".")
-            and (
-                (p.is_file() and p.name.lower().endswith(BUNDLE_ARCHIVE_SUFFIXES))
-                or (p.is_dir() and p.name == BUNDLE_DIRNAME)
+    bundles: list[Path] = []
+    for p in sorted(bundle_dir.iterdir(), key=lambda p: p.name):
+        name = p.name.lower()
+        if name.startswith("."):
+            continue
+        if p.is_dir() or (p.is_file() and name.endswith(BUNDLE_ARCHIVE_SUFFIXES)):
+            bundles.append(p)
+        elif name.endswith(BUNDLE_UNSUPPORTED_ARCHIVE_SUFFIXES):
+            raise BundleError(
+                f"Unsupported bundle archive: {p} (expected a directory or a "
+                f"{', '.join(BUNDLE_ARCHIVE_SUFFIXES)} archive)"
             )
-        ),
-        key=lambda p: p.name,
-    )
+        else:
+            logger.info("Ignoring %s: not a bundle", p)
+    return bundles
 
 
 def _open_bundle(project_dir: Path, bundle: Path) -> ArtifactLayer:
@@ -368,27 +375,28 @@ def find_bundle_layers(
     both provide as an error, so the order of the result has no meaning.
 
     Args:
-        project_dir: Project directory holding ``.nac/``.
-        provides: Paths relative to ``nac/`` of which a bundle must have at
-            least one to be used.
+        project_dir: Project directory holding ``nac/bundles/``.
+        provides: Paths relative to the bundle root of which a bundle must
+            have at least one to be used.
         bundles: Use these archives or directories instead of the ones found
-            in ``.nac/`` (any ``.zip``, ``.tar.gz`` or ``.tgz`` file, or
-            ``bundle/``). None or an empty sequence means auto-detection.
-            Relative paths are resolved against the current working
-            directory, not ``project_dir``.
+            in ``nac/bundles/`` (every ``.zip``, ``.tar.gz`` or ``.tgz`` file
+            and every directory). None or an empty sequence means
+            auto-detection. Relative paths are resolved against the current
+            working directory, not ``project_dir``.
 
     Returns:
         The bundle layers that provide at least one of ``provides`` or disable
-        something in an ``overrides.yaml``. Bundles found in ``.nac/`` with
-        neither are skipped (they may be meant for another tool); explicitly
-        given bundles with neither are an error.
+        something in an ``overrides.yaml``. Bundles found in ``nac/bundles/``
+        with neither are skipped (they may be meant for another tool);
+        explicitly given bundles with neither are an error.
 
     Raises:
         TypeError: If ``provides`` is a single string.
         ValueError: If ``provides`` is empty or has an invalid path.
         BundleError: If an explicitly given bundle is missing or has neither
-            artifacts nor overrides, a bundle is unsafe or invalid, or two
-            bundles share a name.
+            artifacts nor overrides, ``nac/bundles/`` holds an archive of an
+            unsupported type, a bundle is unsafe or invalid, or two bundles
+            share a name.
     """
     paths = validate_provides(provides)
     project_dir = project_dir.resolve()
@@ -404,18 +412,18 @@ def find_bundle_layers(
     layers: list[ArtifactLayer] = []
     for bundle, layer in opened:
         # A bundle that only disables artifacts of the module still applies
-        if provides_any(layer.root, paths) or not layer.overrides.is_empty:
+        if provides_any(layer.nac_dir, paths) or not layer.overrides.is_empty:
             layers.append(layer)
         elif explicit:
             raise BundleError(
-                f"Bundle {bundle} contains no {describe_paths(paths)} "
+                f"Bundle {bundle} contains no {describe_paths(paths, prefix='')} "
                 f"and no {OVERRIDES_FILENAME}"
             )
         else:
             logger.info(
                 "Ignoring %s: it provides no %s and no %s",
                 layer.label,
-                describe_paths(paths),
+                describe_paths(paths, prefix=""),
                 OVERRIDES_FILENAME,
             )
     return layers

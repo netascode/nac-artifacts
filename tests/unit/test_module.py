@@ -321,6 +321,30 @@ class TestFindInstalledModules:
         assert origins(find_installed_modules(project)) == ["module"]
         assert find_installed_modules(project, provides=("schema.yaml",)) == []
 
+    def test_project_bundles_do_not_make_the_root_module_a_layer(
+        self, project: Path
+    ) -> None:
+        """Should not count a project nac/ that only holds bundles and overrides."""
+        install_module(project)
+        (project / "nac/bundles").mkdir(parents=True)
+        (project / "nac/overrides.yaml").write_text("disable: {}\n")
+
+        layers = find_installed_modules(project)
+
+        assert [layer.detail for layer in layers] == [
+            f"module 'm' at {(project / '.terraform/modules/m').resolve()}"
+        ]
+
+    def test_root_module_artifacts_count_next_to_bundles(self, project: Path) -> None:
+        """Should count a project nac/ that also holds artifacts of its own."""
+        write_modules_json(project, [])
+        (project / "nac/bundles").mkdir(parents=True)
+        (project / "nac/rules").mkdir()
+
+        layers = find_installed_modules(project)
+
+        assert [layer.root for layer in layers] == [project.resolve()]
+
     def test_lists_every_matching_module(self, project: Path) -> None:
         """Should return all modules instead of raising on ambiguity."""
         for key in ("a", "b"):
