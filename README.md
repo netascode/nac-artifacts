@@ -16,8 +16,8 @@ Schema, validation rules and test templates can come from three places. They
 are layered, highest priority first:
 
 1. **Local**: files and paths configured in the project itself
-2. **Bundle**: an archive (or directory) dropped into the project, e.g. a
-   set of rules and tests
+2. **Bundle**: an archive (or directory) dropped into the project's
+   `nac/bundles/`, e.g. a set of rules and tests
 3. **Module**: the `nac/` directory shipped inside the installed Terraform
    module, however the module was sourced (registry, git, archive, local path)
 
@@ -25,25 +25,45 @@ are layered, highest priority first:
 merge what they find: for example, `nac-validate` replaces rules by rule ID and
 `nac-test` replaces templates by relative path.
 
-## Artifact layout
+## Layout
 
-Modules and bundles use the same layout below their `nac/` directory:
+Wherever a directory is shared with other tools (a module, a project),
+everything nac-related lives in its `nac/` directory. A bundle belongs to nac
+only, so it holds its artifacts directly at its root.
 
 ```text
-nac/
-├── schema.yaml                 # schema for nac-validate
-├── rules/                      # semantic validation rules for nac-validate
+module/
+├── main.tf
+└── nac/
+    ├── schema.yaml             # schema for nac-validate
+    ├── rules/                  # semantic validation rules for nac-validate
+    └── tests/
+        ├── templates/          # test templates for nac-test
+        ├── jinja_filters/      # Jinja filters for nac-test
+        └── jinja_tests/        # Jinja tests for nac-test (optional)
+
+bundle/
+├── manifest.yaml               # required
+├── overrides.yaml              # optional
+├── schema.yaml                 # same artifacts as in a module's nac/
+├── rules/
 └── tests/
-    ├── templates/              # test templates for nac-test
-    ├── jinja_filters/          # Jinja filters for nac-test
-    └── jinja_tests/            # Jinja tests for nac-test (optional)
+
+project/
+├── main.tf
+└── nac/
+    ├── overrides.yaml          # optional
+    └── bundles/
+        ├── acme-1.2.0.zip      # every archive here is a bundle
+        ├── other-bundle/       # every directory here is a bundle
+        └── .cache/             # extracted archives, ignored by git
 ```
 
 ## Bundles
 
 A bundle is a `.zip` or `.tar.gz` archive (or an already extracted directory)
-with a `manifest.yaml` at its root next to the `nac/` directory. An archive
-made by zipping a single folder is accepted as well.
+with a `manifest.yaml` at its root, next to its artifacts. An archive made by
+zipping a single folder is accepted as well.
 
 ```yaml
 # manifest.yaml
@@ -58,20 +78,22 @@ module:                   # optional
   asked for. A mismatch raises `BundleError`. The check is skipped, with a log
   message, when no module is installed, several are, or the module's version
   is unknown (local and git sources have none).
-- **Location:** any `.zip`, `.tar.gz` or `.tgz` file directly in `.nac/`, or an
-  extracted `.nac/bundle/` directory. The file name is free (it can carry a
-  version or architecture, such as `acme-nxos-1.2.0.zip`) and is never parsed:
-  identity comes from the manifest `name`.
-- **Several bundles:** all bundles in `.nac/` (or all passed explicitly) are
+- **Location:** every `.zip`, `.tar.gz` or `.tgz` file and every directory in
+  the project's `nac/bundles/` is a bundle and must have a `manifest.yaml`. Any
+  other file there is an error, so a mistyped or unsupported archive is not
+  silently skipped; hidden entries are ignored. File and directory names are
+  free (they can carry a version or architecture, such as `acme-nxos-1.2.0.zip`)
+  and are never parsed: identity comes from the manifest `name`.
+- **Several bundles:** all bundles in `nac/bundles/` (or all passed explicitly) are
   *peers* in one priority tier, above the module. They may coexist as long as they
   provide different artifacts, which allows splitting content (for example rules in
   one bundle and tests in another). If two bundles provide the same artifact, the
   tool reports an error naming both. A bundle's `overrides.yaml` affects the module
   but not its peer bundles.
 - **Same name twice:** two bundles with the same manifest `name` (typically an old
-  and a new version left in `.nac/`) are an error, because a forgotten old version
+  and a new version left in `nac/bundles/`) are an error, because a forgotten old version
   would otherwise keep providing artifacts the new one dropped or renamed.
-- **Bundles for other tools:** a bundle found in `.nac/` that provides nothing the
+- **Bundles for other tools:** a bundle found in `nac/bundles/` that provides nothing the
   calling tool uses is skipped (logged at INFO). A bundle passed explicitly that
   provides nothing is an error. A bundle with an `overrides.yaml` that disables
   something always counts, even without any artifacts of its own, so a bundle can
@@ -98,7 +120,7 @@ disable:
 
 The same format is read from two places:
 
-- `.nac/overrides.yaml` in the project: disables artifacts of the bundle and the module
+- `nac/overrides.yaml` in the project: disables artifacts of the bundles and the module
 - `overrides.yaml` at the root of a bundle (next to `manifest.yaml`): disables artifacts of the module
 
 Rules:
@@ -126,12 +148,12 @@ from nac_artifacts import resolve_artifact_layers
 
 layers = resolve_artifact_layers(
     Path.cwd(),
-    provides=("schema.yaml", "rules"),  # paths below nac/ this tool needs
+    provides=("schema.yaml", "rules"),  # artifact paths this tool needs
 )
 for layer in layers:  # bundles (peers) first, then the module
     print(layer.label, layer.version, layer.nac_dir)
 
-# Entries to disable per layer (same order as layers), from .nac/overrides.yaml and bundles
+# Entries to disable per layer (same order as layers), from nac/overrides.yaml and bundles
 from nac_artifacts import DisableMatcher, layer_disables
 
 for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
@@ -144,7 +166,8 @@ for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
 - A layer is used only if it has at least one of the `provides` paths (or, for a
   bundle, an `overrides.yaml` that disables something), so each tool picks the
   layers relevant to it. A layer may therefore lack some or all of the paths. `provides` must be a non-empty sequence
-  of paths relative to `nac/` (a plain string is rejected).
+  of paths relative to a module's `nac/` directory or a bundle's root (a plain
+  string is rejected). `layer.nac_dir` is that directory.
 - Modules are found through the `modules.json` that `terraform init` and
   `tofu init` write (honouring `TF_DATA_DIR`). Only the root module and the
   modules it calls directly are considered. If several provide the requested
@@ -152,10 +175,13 @@ for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
 - Explicit `module_dir` and `bundles` paths are returned as absolute paths.
   Relative ones are resolved against the current working directory (as for
   command line arguments), not against `project_dir`.
-- Bundles are found in `.nac/`, or pass `bundles`. `None` and an empty sequence
-  both mean auto-detection, so forwarding an empty list of command line options
-  keeps the default. Archives are extracted once into `.nac/cache/`, which
-  ignores itself in git.
+- Bundles are found in `nac/bundles/`, or pass `bundles`. `None` and an empty
+  sequence both mean auto-detection, so forwarding an empty list of command line
+  options keeps the default. Archives are extracted once into
+  `nac/bundles/.cache/`, which ignores itself in git.
+- The project's `nac/` can also hold artifacts of the root module itself. Its
+  `bundles/` and `overrides.yaml` are not artifacts, so a project that only
+  holds those does not make the root module a layer.
 - Failures raise `ArtifactError` subclasses (`ModuleDiscoveryError`,
   `AmbiguousModuleError`, `BundleError`).
 

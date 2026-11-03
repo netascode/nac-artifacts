@@ -15,11 +15,17 @@ from nac_artifacts.layer import describe_paths, provides_any, validate_provides
 class TestArtifactLayer:
     """Tests for the ArtifactLayer type."""
 
-    def test_nac_dir_is_below_root(self, tmp_path: Path) -> None:
-        """Should expose <root>/nac as the artifact directory."""
+    def test_nac_dir_is_below_module_root(self, tmp_path: Path) -> None:
+        """Should expose <root>/nac as the artifact directory of a module."""
         layer = ArtifactLayer("module", tmp_path)
 
         assert layer.nac_dir == tmp_path / "nac"
+
+    def test_nac_dir_is_bundle_root(self, tmp_path: Path) -> None:
+        """Should expose the root itself as the artifact directory of a bundle."""
+        layer = ArtifactLayer("bundle", tmp_path)
+
+        assert layer.nac_dir == tmp_path
 
     def test_manifest_defaults_to_empty(self, tmp_path: Path) -> None:
         """Should have an empty manifest unless one is given (modules have none)."""
@@ -44,20 +50,24 @@ class TestProvidesHelpers:
     """Tests for the helpers that match layers against requested paths."""
 
     def test_provides_any_with_existing_path(self, tmp_path: Path) -> None:
-        """Should be true when one of the paths exists below nac/."""
-        (tmp_path / "nac/rules").mkdir(parents=True)
+        """Should be true when one of the paths exists in the directory."""
+        (tmp_path / "rules").mkdir()
 
         assert provides_any(tmp_path, ("schema.yaml", "rules"))
 
     def test_provides_any_without_matching_path(self, tmp_path: Path) -> None:
-        """Should be false when none of the paths exist below nac/."""
-        (tmp_path / "nac/tests").mkdir(parents=True)
+        """Should be false when none of the paths exist in the directory."""
+        (tmp_path / "tests").mkdir()
 
         assert not provides_any(tmp_path, ("schema.yaml", "rules"))
 
-    def test_provides_any_without_nac_dir(self, tmp_path: Path) -> None:
-        """Should be false for a directory without nac/."""
-        assert not provides_any(tmp_path, ("schema.yaml",))
+    def test_provides_any_without_directory(self, tmp_path: Path) -> None:
+        """Should be false for a directory that does not exist."""
+        assert not provides_any(tmp_path / "nac", ("schema.yaml",))
+
+    def test_describe_paths_without_prefix(self) -> None:
+        """Should render the paths as they are for bundles."""
+        assert describe_paths(("schema.yaml",), prefix="") == "schema.yaml"
 
     def test_describe_paths(self) -> None:
         """Should render the requested paths with the nac/ prefix."""
@@ -94,14 +104,26 @@ class TestValidateProvides:
 
 
 class TestProvidesAnyWithoutPaths:
-    """Tests for the any-nac-directory mode used to find installed modules."""
+    """Tests for the any-artifact mode used to find installed modules."""
 
-    def test_nac_directory_counts(self, tmp_path: Path) -> None:
-        """Should be true for any nac/ directory when no paths are given."""
-        (tmp_path / "nac").mkdir()
+    def test_any_entry_counts(self, tmp_path: Path) -> None:
+        """Should be true for a directory with any artifact when no paths are given."""
+        (tmp_path / "templates").mkdir()
 
         assert provides_any(tmp_path, None)
 
-    def test_missing_nac_directory_does_not_count(self, tmp_path: Path) -> None:
-        """Should be false when there is no nac/ directory."""
+    def test_missing_directory_does_not_count(self, tmp_path: Path) -> None:
+        """Should be false when the directory does not exist."""
+        assert not provides_any(tmp_path / "nac", None)
+
+    def test_empty_directory_does_not_count(self, tmp_path: Path) -> None:
+        """Should be false for a directory without entries."""
+        assert not provides_any(tmp_path, None)
+
+    def test_project_bundles_and_overrides_do_not_count(self, tmp_path: Path) -> None:
+        """Should ignore the bundles, overrides and hidden entries of a project."""
+        (tmp_path / "bundles").mkdir()
+        (tmp_path / "overrides.yaml").write_text("disable: {}\n")
+        (tmp_path / ".gitignore").write_text("x\n")
+
         assert not provides_any(tmp_path, None)

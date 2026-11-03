@@ -119,11 +119,11 @@ class TestModulesJson:
 class TestBundles:
     """Tests for bundle_files(), make_zip() and make_tgz()."""
 
-    def test_bundle_files_prefixes_artifacts_and_adds_manifest(self) -> None:
-        """Should put artifacts below nac/ next to a manifest."""
+    def test_bundle_files_adds_manifest_next_to_artifacts(self) -> None:
+        """Should put artifacts at the bundle root next to a manifest."""
         files = bundle_files({"schema.yaml": "x"}, name="acme", version="2.0.0")
 
-        assert files["nac/schema.yaml"] == "x"
+        assert files["schema.yaml"] == "x"
         assert files["manifest.yaml"] == 'name: "acme"\nversion: "2.0.0"\n'
 
     @pytest.mark.parametrize("value", ["1.10", "1", "true", "null", "a: b"])

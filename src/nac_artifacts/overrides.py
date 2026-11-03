@@ -25,7 +25,7 @@ from typing import Any
 
 from ruamel.yaml import YAML
 
-from .constants import BUNDLE_DIR, OVERRIDES_FILENAME
+from .constants import PROJECT_OVERRIDES_FILE
 from .exceptions import OverridesError
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class DisableEntry:
 
     Attributes:
         pattern: Rule ID or template path/glob.
-        source: ``"project"`` for ``.nac/overrides.yaml``, otherwise the label of
+        source: ``"project"`` for ``nac/overrides.yaml``, otherwise the label of
             the bundle whose ``overrides.yaml`` it came from (``bundle acme``).
     """
 
@@ -163,11 +163,11 @@ def load_overrides(path: Path, description: str | None = None) -> Overrides:
 
 
 def load_project_overrides(project_dir: Path) -> Overrides:
-    """Read ``.nac/overrides.yaml`` of a project, or return no overrides."""
-    path = project_dir / BUNDLE_DIR / OVERRIDES_FILENAME
+    """Read ``nac/overrides.yaml`` of a project, or return no overrides."""
+    path = project_dir / PROJECT_OVERRIDES_FILE
     if not path.is_file():
         return Overrides()
-    overrides = load_overrides(path, f"{BUNDLE_DIR / OVERRIDES_FILENAME}")
+    overrides = load_overrides(path, PROJECT_OVERRIDES_FILE.as_posix())
     logger.info(
         "Project overrides disable %d rule(s) and %d template pattern(s)",
         len(overrides.rules),

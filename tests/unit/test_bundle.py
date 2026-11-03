@@ -9,6 +9,7 @@ Tests verify bundle discovery, safe extraction and the content-addressed cache.
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -32,7 +33,7 @@ from nac_artifacts.constants import (
     BUNDLE_CACHE_MAX_AGE_SECONDS,
     BUNDLE_REPLACE_ATTEMPTS,
 )
-from nac_artifacts.testing import overrides_yaml
+from nac_artifacts.testing import overrides_yaml, write_files
 from tests.unit.helpers import (
     bundle_files,
     install_module,
@@ -52,9 +53,9 @@ class TestBundleSource:
     """Tests for bundle discovery, extraction and caching."""
 
     def test_auto_detected_zip(self, project: Path) -> None:
-        """Should detect .nac/bundle.zip and read its manifest version."""
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/bundle.zip", bundle_files())
+        """Should detect nac/bundles/bundle.zip and read its manifest version."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(project / "nac/bundles/bundle.zip", bundle_files())
 
         layers = resolve_artifacts(project)
 
@@ -64,16 +65,16 @@ class TestBundleSource:
         assert (layers[0].nac_dir / "schema.yaml").is_file()
 
     def test_auto_detected_tar_gz(self, project: Path) -> None:
-        """Should detect .nac/bundle.tar.gz."""
-        (project / ".nac").mkdir()
-        make_tgz(project / ".nac/bundle.tar.gz", bundle_files())
+        """Should detect nac/bundles/bundle.tar.gz."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_tgz(project / "nac/bundles/bundle.tar.gz", bundle_files())
 
         assert resolve_artifacts(project)[-1].origin == "bundle"
 
     def test_auto_detected_directory(self, project: Path) -> None:
-        """Should detect an already extracted .nac/bundle directory."""
+        """Should detect an already extracted directory in nac/bundles/."""
         for name, content in bundle_files().items():
-            target = project / ".nac/bundle" / name
+            target = project / "nac/bundles/acme" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
 
@@ -103,7 +104,7 @@ class TestBundleSource:
 
         assert second == first
         assert (first / "marker").read_text() == "kept"
-        assert first.parent == project / ".nac/cache"
+        assert first.parent == project / "nac/bundles/.cache"
 
     def test_different_content_gets_new_cache_entry(
         self, project: Path, tmp_path: Path
@@ -124,19 +125,19 @@ class TestBundleSource:
 
         resolve_artifacts(project, bundle=archive)
 
-        gitignore = project / ".nac/cache/.gitignore"
+        gitignore = project / "nac/bundles/.cache/.gitignore"
         assert gitignore.read_text() == "*\n"
 
     def test_existing_cache_gitignore_is_kept(
         self, project: Path, tmp_path: Path
     ) -> None:
         """Should not overwrite a .gitignore the user already customized."""
-        (project / ".nac/cache").mkdir(parents=True)
-        (project / ".nac/cache/.gitignore").write_text("custom\n")
+        (project / "nac/bundles/.cache").mkdir(parents=True)
+        (project / "nac/bundles/.cache/.gitignore").write_text("custom\n")
 
         resolve_artifacts(project, bundle=make_zip(tmp_path / "b.zip", bundle_files()))
 
-        assert (project / ".nac/cache/.gitignore").read_text() == "custom\n"
+        assert (project / "nac/bundles/.cache/.gitignore").read_text() == "custom\n"
 
     def test_cache_gitignore_added_on_cache_hit(
         self, project: Path, tmp_path: Path
@@ -144,29 +145,29 @@ class TestBundleSource:
         """Should add the .gitignore even if the cache entry already exists."""
         archive = make_zip(tmp_path / "b.zip", bundle_files())
         resolve_artifacts(project, bundle=archive)
-        (project / ".nac/cache/.gitignore").unlink()
+        (project / "nac/bundles/.cache/.gitignore").unlink()
 
         resolve_artifacts(project, bundle=archive)
 
-        assert (project / ".nac/cache/.gitignore").read_text() == "*\n"
+        assert (project / "nac/bundles/.cache/.gitignore").read_text() == "*\n"
 
     def test_directory_bundle_does_not_create_cache(self, project: Path) -> None:
         """Should not create a cache directory for an extracted bundle."""
         for name, content in bundle_files().items():
-            target = project / ".nac/bundle" / name
+            target = project / "nac/bundles/acme" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
 
         resolve_artifacts(project)
 
-        assert not (project / ".nac/cache").exists()
+        assert not (project / "nac/bundles/.cache").exists()
 
     @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
     def test_git_sees_bundle_archive_but_not_cache(self, project: Path) -> None:
         """Should leave only the bundle archive as a candidate for git add."""
         subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/bundle.zip", bundle_files())
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(project / "nac/bundles/bundle.zip", bundle_files())
 
         resolve_artifacts(project)
 
@@ -177,7 +178,7 @@ class TestBundleSource:
             capture_output=True,
             text=True,
         ).stdout.split()
-        assert status == ["??", ".nac/bundle.zip"]
+        assert status == ["??", "nac/bundles/bundle.zip"]
 
     def test_missing_manifest(self, project: Path, tmp_path: Path) -> None:
         """Should raise when the bundle has no manifest.yaml."""
@@ -266,9 +267,9 @@ class TestBundleExtractionSafety:
             tmp_path / "b.zip",
             {
                 "manifest.yaml": "name: acme\n",
-                "nac\\": "",
-                "nac\\schema.yaml": "a: str()\n",
-                "nac\\rules\\1.py": "# rule\n",
+                "rules\\": "",
+                "rules\\1.py": "# rule\n",
+                "tests\\templates\\a.robot": "x\n",
             },
         )
 
@@ -279,7 +280,7 @@ class TestBundleExtractionSafety:
             for p in layer.root.rglob("*")
             if p.is_file()
         )
-        assert files == ["manifest.yaml", "nac/rules/1.py", "nac/schema.yaml"]
+        assert files == ["manifest.yaml", "rules/1.py", "tests/templates/a.robot"]
 
     def test_zip_with_backslash_folder_prefix(
         self, project: Path, tmp_path: Path
@@ -287,13 +288,13 @@ class TestBundleExtractionSafety:
         """Should find the manifest below a zipped folder written with "\\"."""
         archive = make_raw_zip(
             tmp_path / "b.zip",
-            {"acme\\manifest.yaml": "name: acme\n", "acme\\nac\\schema.yaml": "x"},
+            {"acme\\manifest.yaml": "name: acme\n", "acme\\rules\\1.py": "x"},
         )
 
         layer = resolve_artifacts(project, bundle=archive)[0]
 
         assert layer.root.name == "acme"
-        assert (layer.nac_dir / "schema.yaml").is_file()
+        assert (layer.nac_dir / "rules/1.py").is_file()
 
     def test_tar_path_traversal_rejected(self, project: Path, tmp_path: Path) -> None:
         """Should reject tar members that escape the extraction directory."""
@@ -308,7 +309,7 @@ class TestBundleExtractionSafety:
         with zipfile.ZipFile(archive, "w") as zf:
             for name, content in bundle_files().items():
                 zf.writestr(name, content)
-            link = zipfile.ZipInfo("nac/link")
+            link = zipfile.ZipInfo("rules/link")
             link.external_attr = 0o120777 << 16
             zf.writestr(link, "/etc/passwd")
 
@@ -319,7 +320,7 @@ class TestBundleExtractionSafety:
         """Should reject anything but regular files and directories in tar."""
         archive = tmp_path / "link.tar"
         with tarfile.open(archive, "w") as tf:
-            link = tarfile.TarInfo("nac/link")
+            link = tarfile.TarInfo("rules/link")
             link.type = tarfile.SYMTYPE
             link.linkname = "/etc/passwd"
             tf.addfile(link)
@@ -346,7 +347,7 @@ class TestBundleExtractionSafety:
         with pytest.raises(BundleError):
             resolve_artifacts(project, bundle=archive)
 
-        cache = project / ".nac/cache"
+        cache = project / "nac/bundles/.cache"
         leftovers = [p.name for p in cache.iterdir() if p.name != ".gitignore"]
         assert leftovers == []
 
@@ -402,9 +403,9 @@ class TestBundleSelection:
     def test_explicit_bundles_replace_auto_detection(
         self, project: Path, tmp_path: Path
     ) -> None:
-        """Should use only the given bundles even if .nac/ holds others."""
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/detected.zip", bundle_files(name="detected"))
+        """Should use only the given bundles even if nac/bundles/ holds others."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(project / "nac/bundles/detected.zip", bundle_files(name="detected"))
         chosen = make_zip(tmp_path / "x.zip", bundle_files(name="chosen"))
 
         layers = resolve_artifacts(project, bundle=chosen)
@@ -467,13 +468,13 @@ class TestBundleRoot:
         self, project: Path, tmp_path: Path
     ) -> None:
         """Should mention the bundle the user supplied in the error."""
-        archive = make_zip(tmp_path / "customer.zip", {"nac/schema.yaml": "x"})
+        archive = make_zip(tmp_path / "customer.zip", {"schema.yaml": "x"})
 
         with pytest.raises(BundleError) as exc_info:
             resolve_artifacts(project, bundle=archive)
 
         assert "customer.zip" in str(exc_info.value)
-        assert ".nac/cache" not in str(exc_info.value)
+        assert "nac/bundles/.cache" not in str(exc_info.value)
 
 
 class TestManifestValidation:
@@ -555,7 +556,7 @@ class TestBundleLimits:
     def compressible_zip(path: Path, size: int) -> Path:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("manifest.yaml", "name: x\n")
-            archive.writestr("nac/schema.yaml", "a" * size)
+            archive.writestr("schema.yaml", "a" * size)
         return path
 
     def test_archive_file_size_is_capped_before_reading(
@@ -605,7 +606,7 @@ class TestExtractionHousekeeping:
 
     def test_stale_temp_dirs_are_removed(self, project: Path, tmp_path: Path) -> None:
         """Should delete old .extract-* directories from killed processes."""
-        cache = project / ".nac/cache"
+        cache = project / "nac/bundles/.cache"
         stale, fresh = cache / ".extract-stale", cache / ".extract-fresh"
         stale.mkdir(parents=True)
         fresh.mkdir()
@@ -622,7 +623,7 @@ class TestExtractionHousekeeping:
         self, project: Path, tmp_path: Path
     ) -> None:
         """Should not fail on a leftover that cannot be inspected."""
-        cache = project / ".nac/cache"
+        cache = project / "nac/bundles/.cache"
         cache.mkdir(parents=True)
         try:
             (cache / ".extract-broken").symlink_to(tmp_path / "does-not-exist")
@@ -698,7 +699,7 @@ class TestCachePruning:
         self, project: Path, tmp_path: Path
     ) -> None:
         """Should leave files and directories that are not cache entries alone."""
-        cache = project / ".nac/cache"
+        cache = project / "nac/bundles/.cache"
         foreign = [cache / "notes", cache / ("g" * 32), cache / ("a" * 31)]
         for path in foreign:
             path.mkdir(parents=True)
@@ -718,7 +719,7 @@ class TestCachePruning:
         """Should not delete the target of a symlink named like a cache entry."""
         target = tmp_path / "target"
         (target / "keep").mkdir(parents=True)
-        cache = project / ".nac/cache"
+        cache = project / "nac/bundles/.cache"
         cache.mkdir(parents=True)
         try:
             (cache / ("c" * 32)).symlink_to(target, target_is_directory=True)
@@ -743,7 +744,7 @@ class TestCachePruning:
                 raise PermissionError("denied")
             return real_stat(self, **kwargs)
 
-        (project / ".nac/cache" / ("d" * 32)).mkdir()
+        (project / "nac/bundles/.cache" / ("d" * 32)).mkdir()
         monkeypatch.setattr(Path, "stat", failing_stat)
 
         assert resolve_artifacts(project, bundle=archive)[0].root == entry
@@ -914,12 +915,12 @@ class TestPublishRetry:
 
 
 class TestDefaultBundleDetection:
-    """Tests for finding a bundle dropped into .nac/ under any file name."""
+    """Tests for finding a bundle dropped into nac/bundles/ under any file name."""
 
     @pytest.fixture
     def nac_dir(self, project: Path) -> Path:
-        directory = project / ".nac"
-        directory.mkdir()
+        directory = project / "nac/bundles"
+        directory.mkdir(parents=True)
         return directory
 
     def test_empty_bundles_means_auto_detection(
@@ -947,7 +948,7 @@ class TestDefaultBundleDetection:
         )
 
         assert [layer.label for layer in layers] == ["bundle acme"]
-        assert layers[0].root.is_relative_to(project.resolve() / ".nac/cache")
+        assert layers[0].root.is_relative_to(project.resolve() / "nac/bundles/.cache")
 
     def test_versioned_architecture_file_name(
         self, project: Path, nac_dir: Path
@@ -981,16 +982,32 @@ class TestDefaultBundleDetection:
         assert layer.version == "1.0.0"
         assert layer.label == "bundle acme"
 
-    def test_other_files_and_directories_are_ignored(
+    @pytest.mark.parametrize("name", ["README.md", "b.zip.sha256", "b.tar.xz"])
+    def test_other_files_are_an_error(
+        self, project: Path, nac_dir: Path, name: str
+    ) -> None:
+        """Should reject files that are not a supported archive, not skip them."""
+        (nac_dir / name).write_text("x")
+
+        with pytest.raises(BundleError, match=f"Not a bundle: .*{re.escape(name)}"):
+            resolve_artifacts(project)
+
+    def test_every_directory_is_a_bundle(self, project: Path, nac_dir: Path) -> None:
+        """Should treat a directory of any name as a bundle that needs a manifest."""
+        (nac_dir / "notes").mkdir()
+
+        with pytest.raises(BundleError, match="no manifest.yaml at its root"):
+            resolve_artifacts(project)
+
+    def test_directory_with_archive_name_is_a_bundle(
         self, project: Path, nac_dir: Path
     ) -> None:
-        """Should ignore files without a bundle extension and unrelated directories."""
-        (nac_dir / "README.md").write_text("notes")
-        (nac_dir / "bundle.zip.sha256").write_text("abc")
-        (nac_dir / "other-dir").mkdir()
-        (nac_dir / "other.zip").mkdir()  # a directory, not an archive
+        """Should treat a directory named like an archive as an extracted bundle."""
+        write_files(nac_dir / "acme.zip", bundle_files())
 
-        assert resolve_artifacts(project) == []
+        layer = resolve_artifacts(project)[0]
+
+        assert layer.root == (nac_dir / "acme.zip").resolve()
 
     def test_hidden_archives_are_ignored(self, project: Path, nac_dir: Path) -> None:
         """Should ignore hidden entries such as editor or temp files."""
@@ -1023,12 +1040,9 @@ class TestDefaultBundleDetection:
     def test_archive_and_extracted_directory_coexist(
         self, project: Path, nac_dir: Path
     ) -> None:
-        """Should treat an archive next to a bundle/ directory as two bundles."""
+        """Should treat an archive next to an extracted directory as two bundles."""
         make_zip(nac_dir / "customer.zip", bundle_files(name="zipped"))
-        for rel, content in bundle_files(name="folder").items():
-            target = nac_dir / "bundle" / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+        write_files(nac_dir / "folder", bundle_files(name="folder"))
 
         layers = resolve_artifacts(project)
 
@@ -1038,7 +1052,7 @@ class TestDefaultBundleDetection:
         ]
 
     def test_no_nac_directory(self, project: Path) -> None:
-        """Should find nothing when the project has no .nac directory."""
+        """Should find nothing when the project has no nac/bundles directory."""
         assert resolve_artifacts(project) == []
 
 
@@ -1062,12 +1076,17 @@ class TestBundleOverrides:
 
         assert [layer.label for layer in layers] == ["bundle tweaks"]
         assert layers[0].overrides.rules == ("102",)
-        assert not layers[0].nac_dir.exists()
+        assert sorted(p.name for p in layers[0].nac_dir.iterdir()) == [
+            "manifest.yaml",
+            "overrides.yaml",
+        ]
 
     def test_overrides_only_bundle_is_used_when_detected(self, project: Path) -> None:
         """Should not skip an auto-detected bundle that only has overrides."""
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/tweaks.zip", self._overrides_only(templates=["a/*"]))
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(
+            project / "nac/bundles/tweaks.zip", self._overrides_only(templates=["a/*"])
+        )
 
         layers = resolve_artifacts(project)
 
@@ -1090,14 +1109,12 @@ class TestBundleOverrides:
         self, project: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Should still skip a detected bundle whose overrides disable nothing."""
-        (project / ".nac").mkdir()
-        make_zip(project / ".nac/tweaks.zip", self._overrides_only())
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(project / "nac/bundles/tweaks.zip", self._overrides_only())
 
         with caplog.at_level(logging.INFO, logger="nac_artifacts.bundle"):
             assert resolve_artifacts(project) == []
-        assert "provides no nac/schema.yaml or nac/rules and no overrides.yaml" in (
-            caplog.text
-        )
+        assert "provides no schema.yaml or rules and no overrides.yaml" in (caplog.text)
 
     def test_overrides_are_loaded_from_an_archive(
         self, project: Path, tmp_path: Path
@@ -1119,7 +1136,7 @@ class TestBundleOverrides:
             **bundle_files(),
             "overrides.yaml": overrides_yaml(rules=["5"]),
         }.items():
-            target = project / ".nac/bundle" / name
+            target = project / "nac/bundles/acme" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
 
@@ -1147,13 +1164,13 @@ class TestBundleOverrides:
 
         assert resolve_artifacts(project, bundle=archive)[0].overrides.is_empty
 
-    def test_overrides_under_nac_are_not_used(
+    def test_overrides_in_a_subdirectory_are_not_used(
         self, project: Path, tmp_path: Path
     ) -> None:
-        """Should only read overrides.yaml from the bundle root, not from nac/."""
+        """Should only read overrides.yaml from the bundle root."""
         archive = make_zip(
             tmp_path / "b.zip",
-            bundle_files(extra={"nac/overrides.yaml": overrides_yaml(rules=["1"])}),
+            bundle_files(extra={"rules/overrides.yaml": overrides_yaml(rules=["1"])}),
         )
 
         assert resolve_artifacts(project, bundle=archive)[0].overrides.is_empty
@@ -1182,12 +1199,12 @@ class TestBundleOverrides:
         with pytest.raises(ArtifactError):
             resolve_artifacts(project, bundle=archive)
 
-    def test_default_bundle_detection_ignores_overrides_file(
-        self, project: Path, tmp_path: Path
+    def test_default_bundle_detection_ignores_project_overrides(
+        self, project: Path
     ) -> None:
-        """Should not mistake .nac/overrides.yaml for a bundle."""
-        (project / ".nac").mkdir()
-        (project / ".nac" / "overrides.yaml").write_text(overrides_yaml(rules=["1"]))
+        """Should not mistake nac/overrides.yaml for a bundle."""
+        write_files(project / "nac", {"overrides.yaml": overrides_yaml(rules=["1"])})
+        (project / "nac/bundles").mkdir()
 
         assert resolve_artifacts(project) == []
 
@@ -1196,7 +1213,7 @@ def split_files(name: str, **artifacts: str) -> dict[str, str]:
     """A bundle whose artifacts are given as relative path -> content."""
     return {
         "manifest.yaml": f"name: {name}\nversion: 1.0.0\n",
-        **{f"nac/{rel}": text for rel, text in artifacts.items()},
+        **artifacts,
     }
 
 
@@ -1289,12 +1306,12 @@ class TestMultipleBundles:
     ) -> None:
         """Should ignore a detected bundle meant for another tool, and say so."""
         caplog.set_level(logging.INFO, logger="nac_artifacts")
-        (project / ".nac").mkdir()
+        (project / "nac/bundles").mkdir(parents=True)
         make_zip(
-            project / ".nac/tests-only.zip",
+            project / "nac/bundles/tests-only.zip",
             split_files("tests-only", **{"tests/templates/a.robot": ""}),
         )
-        make_zip(project / ".nac/rules.zip", bundle_files(name="rules"))
+        make_zip(project / "nac/bundles/rules.zip", bundle_files(name="rules"))
 
         layers = resolve_artifacts(project)
 
@@ -1304,10 +1321,10 @@ class TestMultipleBundles:
     def test_detected_bundle_for_another_tool_alone_gives_no_layer(
         self, project: Path
     ) -> None:
-        """Should not fail a tool because .nac/ only holds bundles for another one."""
-        (project / ".nac").mkdir()
+        """Should not fail a tool because nac/bundles/ only holds bundles for another one."""
+        (project / "nac/bundles").mkdir(parents=True)
         make_zip(
-            project / ".nac/tests-only.zip",
+            project / "nac/bundles/tests-only.zip",
             split_files("tests-only", **{"tests/templates/a.robot": ""}),
         )
 
@@ -1372,8 +1389,8 @@ class TestMultipleBundles:
 
 @pytest.fixture
 def nac_dir_with_two_versions(project: Path) -> Path:
-    directory = project / ".nac"
-    directory.mkdir()
+    directory = project / "nac/bundles"
+    directory.mkdir(parents=True)
     make_zip(directory / "acme-1.0.0.zip", bundle_files(name="acme", version="1.0.0"))
     make_zip(directory / "acme-2.0.0.zip", bundle_files(name="acme", version="2.0.0"))
     return directory
