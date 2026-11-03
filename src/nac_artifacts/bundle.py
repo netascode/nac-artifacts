@@ -29,6 +29,7 @@ from .constants import (
     BUNDLE_REPLACE_ATTEMPTS,
     BUNDLE_REPLACE_DELAY_SECONDS,
     BUNDLE_STALE_TEMP_SECONDS,
+    BUNDLE_UNSUPPORTED_ARCHIVE_SUFFIXES,
     OVERRIDES_FILENAME,
 )
 from .exceptions import BundleError
@@ -294,28 +295,30 @@ def _default_bundles(project_dir: Path) -> list[Path]:
     """List bundles dropped into ``nac/bundles/``, sorted by name.
 
     Every archive with a supported extension and every directory is a bundle,
-    whatever its name. Hidden entries (such as the cache) are ignored.
+    whatever its name. Hidden entries (such as the cache) and other files (such
+    as notes or checksums) are ignored.
 
     Raises:
-        BundleError: If the directory holds any other file, so that a mistyped
-            or unsupported archive is not silently skipped.
+        BundleError: If the directory holds an archive of an unsupported type,
+            so that a bundle meant to be used is not silently skipped.
     """
     bundle_dir = project_dir / BUNDLE_DIR
     if not bundle_dir.is_dir():
         return []
     bundles: list[Path] = []
     for p in sorted(bundle_dir.iterdir(), key=lambda p: p.name):
-        if p.name.startswith("."):
+        name = p.name.lower()
+        if name.startswith("."):
             continue
-        if not (
-            p.is_dir()
-            or (p.is_file() and p.name.lower().endswith(BUNDLE_ARCHIVE_SUFFIXES))
-        ):
+        if p.is_dir() or (p.is_file() and name.endswith(BUNDLE_ARCHIVE_SUFFIXES)):
+            bundles.append(p)
+        elif name.endswith(BUNDLE_UNSUPPORTED_ARCHIVE_SUFFIXES):
             raise BundleError(
-                f"Not a bundle: {p} (expected a directory or a "
+                f"Unsupported bundle archive: {p} (expected a directory or a "
                 f"{', '.join(BUNDLE_ARCHIVE_SUFFIXES)} archive)"
             )
-        bundles.append(p)
+        else:
+            logger.info("Ignoring %s: not a bundle", p)
     return bundles
 
 
@@ -391,9 +394,9 @@ def find_bundle_layers(
         TypeError: If ``provides`` is a single string.
         ValueError: If ``provides`` is empty or has an invalid path.
         BundleError: If an explicitly given bundle is missing or has neither
-            artifacts nor overrides, ``nac/bundles/`` holds a file that is not
-            a bundle, a bundle is unsafe or invalid, or two bundles share a
-            name.
+            artifacts nor overrides, ``nac/bundles/`` holds an archive of an
+            unsupported type, a bundle is unsafe or invalid, or two bundles
+            share a name.
     """
     paths = validate_provides(provides)
     project_dir = project_dir.resolve()

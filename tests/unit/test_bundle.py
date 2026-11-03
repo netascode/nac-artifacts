@@ -982,15 +982,39 @@ class TestDefaultBundleDetection:
         assert layer.version == "1.0.0"
         assert layer.label == "bundle acme"
 
-    @pytest.mark.parametrize("name", ["README.md", "b.zip.sha256", "b.tar.xz"])
-    def test_other_files_are_an_error(
+    @pytest.mark.parametrize(
+        "name", ["b.tar", "b.tar.xz", "b.TAR.BZ2", "b.tgz.gz", "b.7z", "b.rar"]
+    )
+    def test_unsupported_archives_are_an_error(
         self, project: Path, nac_dir: Path, name: str
     ) -> None:
-        """Should reject files that are not a supported archive, not skip them."""
+        """Should reject archives that cannot be read, not skip them."""
         (nac_dir / name).write_text("x")
 
-        with pytest.raises(BundleError, match=f"Not a bundle: .*{re.escape(name)}"):
+        with pytest.raises(
+            BundleError, match=f"Unsupported bundle archive: .*{re.escape(name)}"
+        ):
             resolve_artifacts(project)
+
+    @pytest.mark.parametrize(
+        "name", ["README.md", "b.zip.sha256", "Thumbs.db", "desktop.ini"]
+    )
+    def test_other_files_are_ignored(
+        self,
+        project: Path,
+        nac_dir: Path,
+        name: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Should skip files that are neither a bundle nor an archive, with a log."""
+        make_zip(nac_dir / "acme.zip", bundle_files())
+        (nac_dir / name).write_text("x")
+
+        with caplog.at_level(logging.INFO, logger="nac_artifacts.bundle"):
+            layers = resolve_artifacts(project)
+
+        assert [layer.label for layer in layers] == ["bundle acme"]
+        assert f"{name}: not a bundle" in caplog.text
 
     def test_every_directory_is_a_bundle(self, project: Path, nac_dir: Path) -> None:
         """Should treat a directory of any name as a bundle that needs a manifest."""

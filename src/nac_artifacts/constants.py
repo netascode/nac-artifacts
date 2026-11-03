@@ -22,6 +22,21 @@ BUNDLE_CACHE_DIR = BUNDLE_DIR / ".cache"
 # Archives are recognized by extension for auto-detection only; the file name is
 # otherwise free (it may carry a version or architecture) and is never parsed
 BUNDLE_ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz")
+# Archives that are likely meant as bundles but cannot be read; an error rather
+# than skipped like other files. Checked after BUNDLE_ARCHIVE_SUFFIXES (.tar.gz)
+BUNDLE_UNSUPPORTED_ARCHIVE_SUFFIXES = (
+    ".tar",
+    ".gz",
+    ".xz",
+    ".txz",
+    ".bz2",
+    ".tbz",
+    ".tbz2",
+    ".zst",
+    ".tzst",
+    ".7z",
+    ".rar",
+)
 # File with disable entries: in nac/ of a project and at the root of a bundle
 OVERRIDES_FILENAME = "overrides.yaml"
 PROJECT_OVERRIDES_FILE = Path(ARTIFACTS_DIRNAME) / OVERRIDES_FILENAME

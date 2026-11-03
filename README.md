@@ -79,10 +79,11 @@ module:                   # optional
   message, when no module is installed, several are, or the module's version
   is unknown (local and git sources have none).
 - **Location:** every `.zip`, `.tar.gz` or `.tgz` file and every directory in
-  the project's `nac/bundles/` is a bundle and must have a `manifest.yaml`. Any
-  other file there is an error, so a mistyped or unsupported archive is not
-  silently skipped; hidden entries are ignored. File and directory names are
-  free (they can carry a version or architecture, such as `acme-nxos-1.2.0.zip`)
+  the project's `nac/bundles/` is a bundle and must have a `manifest.yaml`. An
+  archive of another type (such as `.tar.xz` or `.7z`) is an error, so a bundle
+  meant to be used is not silently skipped. Other files (notes, checksums) are
+  skipped (logged at INFO) and hidden entries are ignored. File and directory
+  names are free (they can carry a version or architecture, such as `acme-nxos-1.2.0.zip`)
   and are never parsed: identity comes from the manifest `name`.
 - **Several bundles:** all bundles in `nac/bundles/` (or all passed explicitly) are
   *peers* in one priority tier, above the module. They may coexist as long as they
