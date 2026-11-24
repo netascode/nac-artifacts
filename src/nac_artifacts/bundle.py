@@ -34,7 +34,7 @@ from .constants import (
 )
 from .exceptions import BundleError
 from .layer import ArtifactLayer, describe_paths, provides_any, validate_provides
-from .overrides import Overrides, load_overrides
+from .overrides import Overrides, load_overrides, validate_kinds
 
 logger = logging.getLogger(__name__)
 
@@ -362,11 +362,19 @@ def _check_unique_names(opened: Sequence[tuple[Path, ArtifactLayer]]) -> None:
             )
 
 
+def _kinds(kinds: Sequence[str] | None) -> str:
+    """Render override kinds for messages: ``rules or templates``."""
+    if kinds is None:
+        return "any kind"
+    return " or ".join(kinds) or "no kind"
+
+
 def find_bundle_layers(
     project_dir: Path,
     *,
     provides: Sequence[str],
     bundles: Sequence[Path] | None = None,
+    override_kinds: Sequence[str] | None = None,
 ) -> list[ArtifactLayer]:
     """Locate, materialize and describe the bundle layers.
 
@@ -383,22 +391,26 @@ def find_bundle_layers(
             and every directory). None or an empty sequence means
             auto-detection. Relative paths are resolved against the current
             working directory, not ``project_dir``.
+        override_kinds: Kinds of ``overrides.yaml`` entries the calling tool
+            reads (``rules``, ``templates``); None means every kind.
 
     Returns:
-        The bundle layers that provide at least one of ``provides`` or disable
-        something in an ``overrides.yaml``. Bundles found in ``nac/bundles/``
+        The bundle layers that provide at least one of ``provides`` or have
+        entries of ``override_kinds`` in an ``overrides.yaml``. Bundles found in ``nac/bundles/``
         with neither are skipped (they may be meant for another tool);
         explicitly given bundles with neither are an error.
 
     Raises:
-        TypeError: If ``provides`` is a single string.
-        ValueError: If ``provides`` is empty or has an invalid path.
+        TypeError: If ``provides`` or ``override_kinds`` is a single string.
+        ValueError: If ``provides`` is empty or has an invalid path, or
+            ``override_kinds`` has an unknown kind.
         BundleError: If an explicitly given bundle is missing or has neither
             artifacts nor overrides, ``nac/bundles/`` holds an archive of an
             unsupported type, a bundle is unsafe or invalid, or two bundles
             share a name.
     """
     paths = validate_provides(provides)
+    kinds = validate_kinds(override_kinds)
     project_dir = project_dir.resolve()
     explicit = bool(bundles)
     sources = list(bundles or []) if explicit else _default_bundles(project_dir)
@@ -411,19 +423,21 @@ def find_bundle_layers(
 
     layers: list[ArtifactLayer] = []
     for bundle, layer in opened:
-        # A bundle that only disables artifacts of the module still applies
-        if provides_any(layer.nac_dir, paths) or not layer.overrides.is_empty:
+        # A bundle that only overrides artifacts of the module still applies,
+        # if the overrides are of a kind the calling tool reads
+        if provides_any(layer.nac_dir, paths) or layer.overrides.affects(kinds):
             layers.append(layer)
         elif explicit:
             raise BundleError(
                 f"Bundle {bundle} contains no {describe_paths(paths, prefix='')} "
-                f"and no {OVERRIDES_FILENAME}"
+                f"and no {OVERRIDES_FILENAME} entries for {_kinds(kinds)}"
             )
         else:
             logger.info(
-                "Ignoring %s: it provides no %s and no %s",
+                "Ignoring %s: it provides no %s and no %s entries for %s",
                 layer.label,
                 describe_paths(paths, prefix=""),
                 OVERRIDES_FILENAME,
+                _kinds(kinds),
             )
     return layers

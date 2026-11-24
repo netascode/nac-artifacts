@@ -173,6 +173,16 @@ class TestOverridesYaml:
         assert overrides.rules == ("1", "2")
         assert overrides.templates == ("a/*.robot",)
 
+    def test_severities_round_trip(self, tmp_path: Path) -> None:
+        """Should write severities that load_overrides reads back."""
+        path = tmp_path / "overrides.yaml"
+        path.write_text(overrides_yaml(rules=["1"], severities={"2": "LOW"}))
+
+        overrides = load_overrides(path)
+
+        assert overrides.rules == ("1",)
+        assert overrides.rule_severities == (("2", "LOW"),)
+
     def test_empty(self, tmp_path: Path) -> None:
         """Should produce a valid file that disables nothing."""
         path = tmp_path / "overrides.yaml"

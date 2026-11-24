@@ -1,3 +1,10 @@
+## 0.3.0
+
+- Add `severity.rules` to `overrides.yaml` to change the severity (`HIGH`, `MEDIUM` or `LOW`) of rules of lower layers, exposed as `Overrides.rule_severities` and `LayerOverrides.rule_severities` (`SeverityEntry`). Peer bundles setting different severities for the same rule are an error unless the project sets it
+- Add `override_kinds` to `resolve_artifact_layers()` and `find_bundle_layers()`, so a bundle whose `overrides.yaml` only has entries for another tool is skipped like one without artifacts for the calling tool
+- Rename `DisableMatcher` to `EntryMatcher` (it also matches severity entries) and `LayerDisables` to `LayerOverrides`; the old names remain as aliases
+- Log only the non-zero counts in the summary of an `overrides.yaml`
+
 ## 0.2.0
 
 - Drop support for Python 3.10

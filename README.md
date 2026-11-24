@@ -96,9 +96,10 @@ module:                   # optional
   would otherwise keep providing artifacts the new one dropped or renamed.
 - **Bundles for other tools:** a bundle found in `nac/bundles/` that provides nothing the
   calling tool uses is skipped (logged at INFO). A bundle passed explicitly that
-  provides nothing is an error. A bundle with an `overrides.yaml` that disables
-  something always counts, even without any artifacts of its own, so a bundle can
-  consist of nothing but a manifest and an `overrides.yaml`.
+  provides nothing is an error. A bundle whose `overrides.yaml` has entries the
+  calling tool reads (see `override_kinds` below) always counts, even without any
+  artifacts of its own, so a bundle can consist of nothing but a manifest and an
+  `overrides.yaml`.
 - **Safety:** archives are checked before extraction (no absolute or `..`
   paths, no symlinks or special files, limits on archive size, extracted size
   and file count). Extraction is atomic and cached by the archive's sha256;
@@ -110,13 +111,16 @@ module:                   # optional
 
 ## Disabling artifacts of lower layers
 
-A layer can add or replace artifacts of the layers below it. To *remove* some, list
-them in an `overrides.yaml`:
+A layer can add or replace artifacts of the layers below it. To *remove* some, or to
+change how severe a rule of a lower layer is, list them in an `overrides.yaml`:
 
 ```yaml
 disable:
   rules: ["102"]                    # nac-validate: by rule ID (exact match)
   templates: ["config/*.robot"]     # nac-test: by path relative to the templates directory
+severity:
+  rules:                            # nac-validate: by rule ID (exact match)
+    "205": LOW                      # HIGH, MEDIUM or LOW (case-insensitive)
 ```
 
 The same format is read from two places:
@@ -129,12 +133,17 @@ Rules:
 - A layer's entries only affect layers *below* it. Its own artifacts and the local
   layer (files and paths you pass to the tools) are never affected; to get a disabled
   artifact back, add a copy to the local layer.
-- Entries are declarative: they state what must not be active. An entry that matches
-  nothing (a typo, a module that no longer has the artifact, no bundle installed) is
+- Entries are declarative: they state what must not be active, or how severe a rule
+  is. An entry that matches nothing (a typo, a module that no longer has the artifact, no bundle installed) is
   not an error. The tools show which entries matched in `--list-artifacts`.
-- The structure is validated: unknown keys, wrong types, empty entries and absolute or
-  `..` template paths are errors (`OverridesError`). Rule IDs may be written unquoted
-  (`102`).
+- The structure is validated: unknown keys, wrong types, empty entries, absolute or
+  `..` template paths, severities other than `HIGH`, `MEDIUM` and `LOW`, and a rule
+  listed twice under `severity.rules` are errors (`OverridesError`). Rule IDs may be
+  written unquoted (`102`).
+- Several layers may set the severity of the same rule; like for disable entries,
+  the entry of the highest priority source wins (the project before bundles).
+  Bundles are peers, so two bundles setting *different* severities for the same rule
+  is an error (`OverridesError`), unless `nac/overrides.yaml` sets that rule too.
 - Template patterns are globs (`fnmatch`; `*` also matches `/`, so `lib/*` covers
   nested files) and are case-sensitive.
 - Bundle overrides can switch validations off, so treat a bundle like code you run. Each
@@ -150,23 +159,29 @@ from nac_artifacts import resolve_artifact_layers
 layers = resolve_artifact_layers(
     Path.cwd(),
     provides=("schema.yaml", "rules"),  # artifact paths this tool needs
+    override_kinds=("rules",),  # overrides.yaml entries this tool reads
 )
 for layer in layers:  # bundles (peers) first, then the module
     print(layer.label, layer.version, layer.nac_dir)
 
-# Entries to disable per layer (same order as layers), from nac/overrides.yaml and bundles
-from nac_artifacts import DisableMatcher, layer_disables
+# Entries per layer (same order as layers), from nac/overrides.yaml and bundles
+from nac_artifacts import EntryMatcher, layer_disables
 
-for layer, disabled in zip(layers, layer_disables(Path.cwd(), layers)):
-    matcher = DisableMatcher(disabled.rules)  # exact; use glob=True for templates
+for layer, overrides in zip(layers, layer_disables(Path.cwd(), layers)):
+    matcher = EntryMatcher(overrides.rules)  # exact; use glob=True for templates
     if matcher.match("102"):
         ...  # rule 102 is disabled for this layer
     print(matcher.unmatched())  # entries that matched nothing, for reporting
+    entry = EntryMatcher(overrides.rule_severities).match("205")
+    if entry:
+        ...  # rule 205 has entry.severity (HIGH, MEDIUM or LOW) for this layer
 ```
 
 - A layer is used only if it has at least one of the `provides` paths (or, for a
-  bundle, an `overrides.yaml` that disables something), so each tool picks the
-  layers relevant to it. A layer may therefore lack some or all of the paths. `provides` must be a non-empty sequence
+  bundle, `overrides.yaml` entries of one of the `override_kinds`), so each tool picks
+  the layers relevant to it. `override_kinds` names the entries the tool reads:
+  `rules` (`disable.rules` and `severity.rules`) or `templates` (`disable.templates`);
+  without it, entries of any kind count. A layer may therefore lack some or all of the paths. `provides` must be a non-empty sequence
   of paths relative to a module's `nac/` directory or a bundle's root (a plain
   string is rejected). `layer.nac_dir` is that directory.
 - Modules are found through the `modules.json` that `terraform init` and

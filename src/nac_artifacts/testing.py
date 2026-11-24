@@ -128,13 +128,24 @@ def bundle_files(
     return content
 
 
-def overrides_yaml(*, rules: Sequence[str] = (), templates: Sequence[str] = ()) -> str:
-    """Return the text of an ``overrides.yaml`` disabling the given entries."""
-    return (
+def overrides_yaml(
+    *,
+    rules: Sequence[str] = (),
+    templates: Sequence[str] = (),
+    severities: Mapping[str, str] | None = None,
+) -> str:
+    """Return the text of an ``overrides.yaml`` disabling the given entries.
+
+    ``severities`` maps rule IDs to the severity to give them.
+    """
+    text = (
         "disable:\n"
         f"  rules: {json.dumps(list(rules))}\n"
         f"  templates: {json.dumps(list(templates))}\n"
     )
+    if severities is not None:
+        text += f"severity:\n  rules: {json.dumps(dict(severities))}\n"
+    return text
 
 
 def make_zip(path: Path, files: Mapping[str, str]) -> Path:

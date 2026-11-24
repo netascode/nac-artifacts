@@ -16,6 +16,7 @@ import tarfile
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1084,7 +1085,7 @@ class TestBundleOverrides:
     """Tests for the overrides.yaml shipped at the root of a bundle."""
 
     @staticmethod
-    def _overrides_only(**disable: list[str]) -> dict[str, str]:
+    def _overrides_only(**disable: Any) -> dict[str, str]:
         return {
             "manifest.yaml": "name: tweaks\nversion: '1.0.0'\n",
             "overrides.yaml": overrides_yaml(**disable),
@@ -1115,6 +1116,66 @@ class TestBundleOverrides:
         layers = resolve_artifacts(project)
 
         assert [layer.overrides.templates for layer in layers] == [("a/*",)]
+
+    def test_severity_only_bundle_is_used(self, project: Path) -> None:
+        """Should not skip a bundle whose overrides only set severities."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(
+            project / "nac/bundles/tweaks.zip",
+            self._overrides_only(severities={"102": "LOW"}),
+        )
+
+        layers = resolve_artifacts(project)
+
+        assert [layer.overrides.rule_severities for layer in layers] == [
+            (("102", "LOW"),)
+        ]
+
+    def test_bundle_with_overrides_of_another_kind_is_skipped(
+        self, project: Path
+    ) -> None:
+        """Should skip a bundle whose overrides the calling tool does not read."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(
+            project / "nac/bundles/tweaks.zip",
+            self._overrides_only(severities={"102": "LOW"}),
+        )
+
+        layers = find_bundle_layers(
+            project, provides=("templates",), override_kinds=("templates",)
+        )
+
+        assert layers == []
+
+    def test_explicit_bundle_with_overrides_of_another_kind_is_an_error(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should name the kinds the tool reads in the error."""
+        archive = make_zip(tmp_path / "b.zip", self._overrides_only(rules=["102"]))
+
+        with pytest.raises(
+            BundleError, match="no overrides.yaml entries for templates"
+        ):
+            find_bundle_layers(
+                project,
+                provides=("templates",),
+                bundles=[archive],
+                override_kinds=("templates",),
+            )
+
+    def test_bundle_with_overrides_of_a_read_kind_is_used(self, project: Path) -> None:
+        """Should use a severity-only bundle for a tool reading rule entries."""
+        (project / "nac/bundles").mkdir(parents=True)
+        make_zip(
+            project / "nac/bundles/tweaks.zip",
+            self._overrides_only(severities={"102": "LOW"}),
+        )
+
+        layers = find_bundle_layers(
+            project, provides=("rules",), override_kinds=("rules",)
+        )
+
+        assert [layer.label for layer in layers] == ["bundle tweaks"]
 
     def test_overrides_only_bundle_disables_module_artifacts(
         self, project: Path, tmp_path: Path

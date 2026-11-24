@@ -9,6 +9,7 @@ layers through the paths they need, and bundle/module compatibility checks.
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,8 @@ from nac_artifacts import (
     DisableEntry,
     ModuleDiscoveryError,
     Overrides,
+    OverridesError,
+    SeverityEntry,
     disables_by_layer,
     layer_disables,
 )
@@ -256,7 +259,7 @@ class TestDisablesByLayer:
 
     @staticmethod
     def layer(
-        origin: ArtifactOrigin, name: str = "acme", **disabled: tuple[str, ...]
+        origin: ArtifactOrigin, name: str = "acme", **disabled: tuple[Any, ...]
     ) -> ArtifactLayer:
         return ArtifactLayer(
             origin,
@@ -327,6 +330,64 @@ class TestDisablesByLayer:
 
         assert bundle.rules == ()
 
+    def test_severities_follow_the_same_layering(self) -> None:
+        """Should apply project severities everywhere and bundle ones below only."""
+        layers = [
+            self.layer("bundle", rule_severities=(("7", "MEDIUM"),)),
+            self.layer("module"),
+        ]
+
+        bundle, module = disables_by_layer(
+            Overrides(rule_severities=(("7", "LOW"),)), layers
+        )
+
+        assert bundle.rule_severities == (SeverityEntry("7", "LOW", "project"),)
+        assert module.rule_severities == (
+            SeverityEntry("7", "LOW", "project"),
+            SeverityEntry("7", "MEDIUM", "bundle acme"),
+        )
+
+    def test_peer_bundles_setting_different_severities_fail(self) -> None:
+        """Should not let the order of peer bundles decide a severity."""
+        layers = [
+            self.layer("bundle", "a", rule_severities=(("7", "LOW"),)),
+            self.layer("bundle", "b", rule_severities=(("7", "HIGH"),)),
+            self.layer("module"),
+        ]
+
+        with pytest.raises(
+            OverridesError,
+            match=r"Bundle a and bundle b set different severities for rule '7' "
+            r"\(LOW, HIGH\); set it in nac/overrides\.yaml",
+        ):
+            disables_by_layer(Overrides(), layers)
+
+    def test_project_decides_between_peer_bundles(self) -> None:
+        """Should accept the conflict when the project sets the rule itself."""
+        layers = [
+            self.layer("bundle", "a", rule_severities=(("7", "LOW"),)),
+            self.layer("bundle", "b", rule_severities=(("7", "HIGH"),)),
+            self.layer("module"),
+        ]
+
+        *_, module = disables_by_layer(
+            Overrides(rule_severities=(("7", "MEDIUM"),)), layers
+        )
+
+        assert module.rule_severities[0] == SeverityEntry("7", "MEDIUM", "project")
+
+    def test_peer_bundles_agreeing_on_a_severity_are_fine(self) -> None:
+        """Should only fail for different severities."""
+        layers = [
+            self.layer("bundle", "a", rule_severities=(("7", "LOW"),)),
+            self.layer("bundle", "b", rule_severities=(("7", "LOW"),)),
+            self.layer("module"),
+        ]
+
+        *_, module = disables_by_layer(Overrides(), layers)
+
+        assert len(module.rule_severities) == 2
+
     def test_no_layers(self) -> None:
         """Should return nothing without layers."""
         assert disables_by_layer(Overrides(rules=("1",)), []) == []
@@ -386,6 +447,31 @@ class TestLayerDisables:
         layer_disables(project, resolve_artifacts(project, bundle=archive))
 
         assert (
-            "Bundle acme 1.2.0 disables 2 rule(s) and 0 template pattern(s)"
+            "Bundle acme 1.2.0 overrides of lower layers: 2 rule(s) disabled"
             in caplog.text
+        )
+
+    def test_reads_severities_of_project_and_bundle(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        """Should combine severities from nac/overrides.yaml and a bundle."""
+        install_module(project)
+        write_files(
+            project / "nac",
+            {"overrides.yaml": overrides_yaml(severities={"1": "LOW"})},
+        )
+        archive = make_zip(
+            tmp_path / "b.zip",
+            bundle_files(
+                extra={"overrides.yaml": overrides_yaml(severities={"2": "MEDIUM"})}
+            ),
+        )
+        layers = resolve_artifacts(project, bundle=archive)
+
+        bundle, module = layer_disables(project, layers)
+
+        assert bundle.rule_severities == (SeverityEntry("1", "LOW", "project"),)
+        assert module.rule_severities == (
+            SeverityEntry("1", "LOW", "project"),
+            SeverityEntry("2", "MEDIUM", "bundle acme"),
         )
