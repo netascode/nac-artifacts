@@ -16,8 +16,12 @@ import pytest
 from nac_artifacts import (
     DisableEntry,
     DisableMatcher,
+    EntryMatcher,
+    LayerDisables,
+    LayerOverrides,
     Overrides,
     OverridesError,
+    SeverityEntry,
     load_overrides,
     load_project_overrides,
 )
@@ -161,6 +165,107 @@ class TestValidation:
         assert not parse(tmp_path, text).is_empty
 
 
+class TestSeverity:
+    """Tests for ``severity.rules``."""
+
+    def test_reads_rule_severities_in_file_order(self, tmp_path: Path) -> None:
+        """Should read rule ID and severity pairs."""
+        text = overrides_yaml(severities={"205": "LOW", "101": "MEDIUM"})
+
+        assert parse(tmp_path, text).rule_severities == (
+            ("205", "LOW"),
+            ("101", "MEDIUM"),
+        )
+
+    def test_severity_is_case_insensitive(self, tmp_path: Path) -> None:
+        """Should accept any case and surrounding spaces, stored upper-case."""
+        text = "severity:\n  rules:\n    '1': ' low '\n    '2': Medium\n"
+
+        assert parse(tmp_path, text).rule_severities == (("1", "LOW"), ("2", "MEDIUM"))
+
+    def test_unquoted_numeric_rule_ids_are_accepted(self, tmp_path: Path) -> None:
+        """Should turn the key 205 (read by YAML as a number) into '205'."""
+        text = "severity:\n  rules:\n    205: HIGH\n"
+
+        assert parse(tmp_path, text).rule_severities == (("205", "HIGH"),)
+
+    def test_severity_only_is_not_empty(self, tmp_path: Path) -> None:
+        """Should count a file that only sets severities as overrides."""
+        overrides = parse(tmp_path, "severity:\n  rules:\n    '1': LOW\n")
+
+        assert not overrides.is_empty
+        assert overrides.rules == () and overrides.templates == ()
+
+    @pytest.mark.parametrize("text", ["severity:\n", "severity:\n  rules:\n"])
+    def test_empty_section_sets_nothing(self, tmp_path: Path, text: str) -> None:
+        """Should accept an empty severity section."""
+        assert parse(tmp_path, text).is_empty
+
+    @pytest.mark.parametrize("level", ["WARNING", "CRITICAL", "1", "true", "~", "[]"])
+    def test_unknown_severities_are_rejected(self, tmp_path: Path, level: str) -> None:
+        """Should only accept HIGH, MEDIUM and LOW."""
+        text = f"severity:\n  rules:\n    '1': {level}\n"
+
+        with pytest.raises(OverridesError, match="expected one of HIGH, MEDIUM, LOW"):
+            parse(tmp_path, text)
+
+    def test_rule_listed_twice_is_rejected(self, tmp_path: Path) -> None:
+        """Should reject 102 and '102', which are one rule."""
+        text = "severity:\n  rules:\n    102: LOW\n    '102': HIGH\n"
+
+        with pytest.raises(OverridesError, match="listed twice"):
+            parse(tmp_path, text)
+
+    @pytest.mark.parametrize("value", ["LOW", "['1']"])
+    def test_rules_must_be_a_mapping(self, tmp_path: Path, value: str) -> None:
+        """Should reject anything but a mapping below severity.rules."""
+        with pytest.raises(OverridesError, match="'severity.rules'.*must be a mapping"):
+            parse(tmp_path, f"severity:\n  rules: {value}\n")
+
+    def test_severity_must_be_a_mapping(self, tmp_path: Path) -> None:
+        """Should reject a list as the severity section."""
+        with pytest.raises(OverridesError, match="'severity'.*must be a mapping"):
+            parse(tmp_path, "severity: [LOW]\n")
+
+    def test_unknown_key_under_severity(self, tmp_path: Path) -> None:
+        """Should reject keys other than rules, e.g. templates."""
+        with pytest.raises(OverridesError, match="under 'severity'.*supported: rules"):
+            parse(tmp_path, "severity:\n  templates: {a: LOW}\n")
+
+    @pytest.mark.parametrize("key", ["''", "true"])
+    def test_invalid_rule_ids_are_rejected(self, tmp_path: Path, key: str) -> None:
+        """Should reject empty and non-text rule IDs."""
+        with pytest.raises(OverridesError, match="'severity.rules'"):
+            parse(tmp_path, f"severity:\n  rules:\n    {key}: LOW\n")
+
+
+class TestAffects:
+    """Tests for Overrides.affects() and summary()."""
+
+    def test_kinds(self) -> None:
+        """Should count rule entries of both sections as rules."""
+        severity_only = Overrides(rule_severities=(("1", "LOW"),))
+        templates_only = Overrides(templates=("a",))
+
+        assert severity_only.affects() and severity_only.affects(["rules"])
+        assert not severity_only.affects(["templates"])
+        assert templates_only.affects(["templates"])
+        assert not templates_only.affects(["rules"])
+        assert not Overrides().affects()
+
+    def test_invalid_kinds(self) -> None:
+        """Should reject unknown kinds and a single string."""
+        with pytest.raises(ValueError, match="Unknown override kind"):
+            Overrides().affects(["schema"])
+        with pytest.raises(TypeError):
+            Overrides().affects("rules")
+
+    def test_summary_lists_only_what_is_set(self) -> None:
+        """Should leave out zero counts."""
+        assert Overrides(rules=("1",)).summary() == "1 rule(s) disabled"
+        assert Overrides().summary() == "nothing"
+
+
 class TestProjectOverrides:
     """Tests for nac/overrides.yaml of a project."""
 
@@ -193,7 +298,24 @@ class TestProjectOverrides:
 
         load_project_overrides(tmp_path)
 
-        assert "disable 2 rule(s) and 1 template pattern(s)" in caplog.text
+        assert (
+            "Project overrides: 2 rule(s) disabled, 1 template pattern(s) disabled"
+            in caplog.text
+        )
+
+    def test_logs_how_many_severities_the_project_sets(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Should include severity entries in the summary."""
+        caplog.set_level(logging.INFO, logger="nac_artifacts")
+        write_files(
+            tmp_path / "nac",
+            {"overrides.yaml": overrides_yaml(severities={"1": "LOW"})},
+        )
+
+        load_project_overrides(tmp_path)
+
+        assert "Project overrides: severity of 1 rule(s) set" in caplog.text
 
 
 class TestDisableMatcher:
@@ -259,3 +381,18 @@ class TestDisableMatcher:
 
         assert matcher.match("anything") is None
         assert matcher.unmatched() == []
+
+    def test_matches_severity_entries(self) -> None:
+        """Should match severity entries by rule ID and track them the same way."""
+        first = SeverityEntry("1", "LOW", "project")
+        second = SeverityEntry("1", "HIGH", "bundle acme")
+        matcher = DisableMatcher([first, second, SeverityEntry("2", "LOW", "project")])
+
+        assert matcher.match("1") == first
+        assert [e.pattern for e in matcher.unmatched()] == ["1", "2"]
+
+
+def test_old_names_are_aliases() -> None:
+    """Should keep the names from before severity entries for compatibility."""
+    assert DisableMatcher is EntryMatcher
+    assert LayerDisables is LayerOverrides

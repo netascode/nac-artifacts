@@ -16,12 +16,21 @@ from .module import find_installed_modules, find_module_layer
 from .overrides import (
     DisableEntry,
     DisableMatcher,
+    EntryMatcher,
     LayerDisables,
+    LayerOverrides,
     Overrides,
+    SeverityEntry,
     load_overrides,
     load_project_overrides,
 )
-from .resolver import disables_by_layer, layer_disables, resolve_artifact_layers
+from .resolver import (
+    disables_by_layer,
+    layer_disables,
+    layer_overrides,
+    overrides_by_layer,
+    resolve_artifact_layers,
+)
 
 __version__ = version("nac-artifacts")
 
@@ -33,17 +42,22 @@ __all__ = [
     "BundleError",
     "DisableEntry",
     "DisableMatcher",
+    "EntryMatcher",
     "LayerDisables",
+    "LayerOverrides",
     "ModuleDiscoveryError",
     "Overrides",
     "OverridesError",
+    "SeverityEntry",
     "disables_by_layer",
     "find_bundle_layers",
     "find_installed_modules",
     "find_module_layer",
     "layer_disables",
+    "layer_overrides",
     "load_overrides",
     "load_project_overrides",
+    "overrides_by_layer",
     "resolve_artifact_layers",
     "__version__",
 ]

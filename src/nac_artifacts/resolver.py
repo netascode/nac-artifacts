@@ -11,13 +11,14 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from .bundle import find_bundle_layers
-from .exceptions import BundleError
+from .exceptions import BundleError, OverridesError
 from .layer import ArtifactLayer, validate_provides
 from .module import find_installed_modules, find_module_layer
 from .overrides import (
     DisableEntry,
-    LayerDisables,
+    LayerOverrides,
     Overrides,
+    SeverityEntry,
     load_project_overrides,
 )
 
@@ -80,6 +81,7 @@ def resolve_artifact_layers(
     provides: Sequence[str],
     bundles: Sequence[Path] | None = None,
     module_dir: Path | None = None,
+    override_kinds: Sequence[str] | None = None,
 ) -> list[ArtifactLayer]:
     """Resolve the bundle and module layers, highest priority first.
 
@@ -90,24 +92,29 @@ def resolve_artifact_layers(
     Args:
         project_dir: Project directory.
         provides: Paths relative to a module's ``nac/`` directory or a
-            bundle's root of which a layer must have at least one to be used (a bundle whose ``overrides.yaml`` disables
-            something is always used). Lets each tool select the layers
-            relevant to it.
+            bundle's root of which a layer must have at least one to be used (a
+            bundle whose ``overrides.yaml`` has entries of ``override_kinds`` is
+            always used). Lets each tool select the layers relevant to it.
         bundles: Explicit bundle archives or directories (replace auto-detection).
             None or an empty sequence means auto-detection.
         module_dir: Explicit module directory.
+        override_kinds: Kinds of ``overrides.yaml`` entries the tool reads
+            (``rules``, ``templates``); None means every kind.
 
     Relative ``bundles`` and ``module_dir`` paths are resolved against the
     current working directory, not ``project_dir``.
 
     Raises:
-        TypeError: If ``provides`` is a single string.
-        ValueError: If ``provides`` is empty or has an invalid path.
+        TypeError: If ``provides`` or ``override_kinds`` is a single string.
+        ValueError: If ``provides`` is empty or has an invalid path, or
+            ``override_kinds`` has an unknown kind.
         ArtifactError: If a layer cannot be resolved or a bundle is incompatible
             with the module.
     """
     paths = validate_provides(provides)
-    bundle_layers = find_bundle_layers(project_dir, provides=paths, bundles=bundles)
+    bundle_layers = find_bundle_layers(
+        project_dir, provides=paths, bundles=bundles, override_kinds=override_kinds
+    )
     module_layer = find_module_layer(project_dir, provides=paths, module_dir=module_dir)
 
     layers: list[ArtifactLayer] = []
@@ -128,10 +135,30 @@ def _tier(layer: ArtifactLayer) -> int:
     return 0 if layer.origin == "bundle" else 1
 
 
-def disables_by_layer(
+def _check_severity_conflicts(entries: Sequence[SeverityEntry]) -> None:
+    """Fail if peer bundles set different severities for a rule the project does not.
+
+    Bundles are peers, so neither may decide over the other; the project
+    deciding (its entry comes first and wins) resolves the conflict.
+    """
+    decided = {e.pattern for e in entries if e.source == "project"}
+    first: dict[str, SeverityEntry] = {}
+    for entry in entries:
+        if entry.pattern in decided:
+            continue
+        other = first.setdefault(entry.pattern, entry)
+        if other.severity != entry.severity:
+            raise OverridesError(
+                f"{other.source.capitalize()} and {entry.source} set different "
+                f"severities for rule {entry.pattern!r} ({other.severity}, "
+                f"{entry.severity}); set it in nac/overrides.yaml to decide"
+            )
+
+
+def overrides_by_layer(
     project: Overrides, layers: Sequence[ArtifactLayer]
-) -> list[LayerDisables]:
-    """Work out which disable entries apply to each layer.
+) -> list[LayerOverrides]:
+    """Work out which disable and severity entries apply to each layer.
 
     The project's entries and the entries of every layer in a *higher tier* apply
     to a layer. Bundles are peers, so a bundle's entries do not affect other
@@ -145,11 +172,18 @@ def disables_by_layer(
     Returns:
         One result per layer, in the same order. Within each, entries from the
         highest priority source come first.
+
+    Raises:
+        OverridesError: If peer bundles set different severities for the same
+            rule and the project does not set it.
     """
-    result: list[LayerDisables] = []
+    result: list[LayerOverrides] = []
     for layer in layers:
         rules = [DisableEntry(p, "project") for p in project.rules]
         templates = [DisableEntry(p, "project") for p in project.templates]
+        severities = [
+            SeverityEntry(p, s, "project") for p, s in project.rule_severities
+        ]
         for above in layers:
             if _tier(above) >= _tier(layer):
                 continue
@@ -157,13 +191,18 @@ def disables_by_layer(
             templates += [
                 DisableEntry(p, above.label) for p in above.overrides.templates
             ]
-        result.append(LayerDisables(tuple(rules), tuple(templates)))
+            severities += [
+                SeverityEntry(p, s, above.label)
+                for p, s in above.overrides.rule_severities
+            ]
+        _check_severity_conflicts(severities)
+        result.append(LayerOverrides(tuple(rules), tuple(templates), tuple(severities)))
     return result
 
 
-def layer_disables(
+def layer_overrides(
     project_dir: Path, layers: Sequence[ArtifactLayer]
-) -> list[LayerDisables]:
+) -> list[LayerOverrides]:
     """Read the project's ``overrides.yaml`` and work out what applies to each layer.
 
     Args:
@@ -171,16 +210,21 @@ def layer_disables(
         layers: Resolved layers, highest priority first.
 
     Raises:
-        OverridesError: If the project's ``overrides.yaml`` is malformed.
+        OverridesError: If the project's ``overrides.yaml`` is malformed, or
+            peer bundles set different severities for the same rule.
     """
     layers = list(layers)
     for layer in layers:
         if not layer.overrides.is_empty:
             logger.info(
-                "%s %s disables %d rule(s) and %d template pattern(s) of lower layers",
+                "%s %s overrides of lower layers: %s",
                 layer.label.capitalize(),
                 layer.version or "",
-                len(layer.overrides.rules),
-                len(layer.overrides.templates),
+                layer.overrides.summary(),
             )
-    return disables_by_layer(load_project_overrides(project_dir), layers)
+    return overrides_by_layer(load_project_overrides(project_dir), layers)
+
+
+# Names before severity entries were added, kept for compatibility
+disables_by_layer = overrides_by_layer
+layer_disables = layer_overrides
