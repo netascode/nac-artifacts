@@ -24,6 +24,8 @@ from nac_artifacts import (
     SeverityEntry,
     disables_by_layer,
     layer_disables,
+    layer_overrides,
+    overrides_by_layer,
 )
 from nac_artifacts.testing import overrides_yaml, write_files
 from tests.unit.helpers import (
@@ -254,7 +256,7 @@ class TestResolveValidation:
             resolve_artifacts(project, provides=())
 
 
-class TestDisablesByLayer:
+class TestOverridesByLayer:
     """Tests for which disable entries apply to which layer."""
 
     @staticmethod
@@ -272,7 +274,7 @@ class TestDisablesByLayer:
         """Should apply the project's entries to the bundle and the module."""
         layers = [self.layer("bundle"), self.layer("module")]
 
-        result = disables_by_layer(Overrides(rules=("1",), templates=("a",)), layers)
+        result = overrides_by_layer(Overrides(rules=("1",), templates=("a",)), layers)
 
         for applied in result:
             assert applied.rules == (DisableEntry("1", "project"),)
@@ -282,7 +284,7 @@ class TestDisablesByLayer:
         """Should apply a bundle's entries to the module but not to the bundle."""
         layers = [self.layer("bundle", rules=("7",)), self.layer("module")]
 
-        bundle, module = disables_by_layer(Overrides(), layers)
+        bundle, module = overrides_by_layer(Overrides(), layers)
 
         assert bundle.rules == ()
         assert module.rules == (DisableEntry("7", "bundle acme"),)
@@ -291,7 +293,7 @@ class TestDisablesByLayer:
         """Should list the highest priority source first."""
         layers = [self.layer("bundle", rules=("7",)), self.layer("module")]
 
-        _, module = disables_by_layer(Overrides(rules=("1",)), layers)
+        _, module = overrides_by_layer(Overrides(rules=("1",)), layers)
 
         assert [(e.pattern, e.source) for e in module.rules] == [
             ("1", "project"),
@@ -306,7 +308,7 @@ class TestDisablesByLayer:
             self.layer("module"),
         ]
 
-        a, b, module = disables_by_layer(Overrides(), layers)
+        a, b, module = overrides_by_layer(Overrides(), layers)
 
         assert a.rules == () and b.rules == ()
         assert [(e.pattern, e.source) for e in module.rules] == [
@@ -318,7 +320,7 @@ class TestDisablesByLayer:
         """Should still apply the project's entries to all bundles."""
         layers = [self.layer("bundle", "a"), self.layer("bundle", "b")]
 
-        a, b = disables_by_layer(Overrides(rules=("9",)), layers)
+        a, b = overrides_by_layer(Overrides(rules=("9",)), layers)
 
         assert a.rules == b.rules == (DisableEntry("9", "project"),)
 
@@ -326,7 +328,7 @@ class TestDisablesByLayer:
         """Should not let a lower layer disable anything above it."""
         layers = [self.layer("bundle"), self.layer("module", rules=("9",))]
 
-        bundle, _ = disables_by_layer(Overrides(), layers)
+        bundle, _ = overrides_by_layer(Overrides(), layers)
 
         assert bundle.rules == ()
 
@@ -337,7 +339,7 @@ class TestDisablesByLayer:
             self.layer("module"),
         ]
 
-        bundle, module = disables_by_layer(
+        bundle, module = overrides_by_layer(
             Overrides(rule_severities=(("7", "LOW"),)), layers
         )
 
@@ -360,7 +362,7 @@ class TestDisablesByLayer:
             match=r"Bundle a and bundle b set different severities for rule '7' "
             r"\(LOW, HIGH\); set it in nac/overrides\.yaml",
         ):
-            disables_by_layer(Overrides(), layers)
+            overrides_by_layer(Overrides(), layers)
 
     def test_project_decides_between_peer_bundles(self) -> None:
         """Should accept the conflict when the project sets the rule itself."""
@@ -370,7 +372,7 @@ class TestDisablesByLayer:
             self.layer("module"),
         ]
 
-        *_, module = disables_by_layer(
+        *_, module = overrides_by_layer(
             Overrides(rule_severities=(("7", "MEDIUM"),)), layers
         )
 
@@ -384,22 +386,22 @@ class TestDisablesByLayer:
             self.layer("module"),
         ]
 
-        *_, module = disables_by_layer(Overrides(), layers)
+        *_, module = overrides_by_layer(Overrides(), layers)
 
         assert len(module.rule_severities) == 2
 
     def test_no_layers(self) -> None:
         """Should return nothing without layers."""
-        assert disables_by_layer(Overrides(rules=("1",)), []) == []
+        assert overrides_by_layer(Overrides(rules=("1",)), []) == []
 
     def test_one_result_per_layer_in_order(self) -> None:
         """Should keep the result aligned with the layers."""
         layers = [self.layer("bundle"), self.layer("module")]
 
-        assert len(disables_by_layer(Overrides(), layers)) == 2
+        assert len(overrides_by_layer(Overrides(), layers)) == 2
 
 
-class TestLayerDisables:
+class TestLayerOverrides:
     """Tests for reading overrides from the project and from bundles together."""
 
     def test_reads_project_and_bundle_overrides(
@@ -414,7 +416,7 @@ class TestLayerDisables:
         )
         layers = resolve_artifacts(project, bundle=archive)
 
-        bundle, module = layer_disables(project, layers)
+        bundle, module = layer_overrides(project, layers)
 
         assert [e.pattern for e in bundle.rules] == ["1"]
         assert [(e.pattern, e.source) for e in module.rules] == [
@@ -426,7 +428,7 @@ class TestLayerDisables:
         """Should return empty results when no overrides exist."""
         install_module(project)
 
-        (module,) = layer_disables(project, resolve_artifacts(project))
+        (module,) = layer_overrides(project, resolve_artifacts(project))
 
         assert module.rules == () and module.templates == ()
 
@@ -444,7 +446,7 @@ class TestLayerDisables:
             ),
         )
 
-        layer_disables(project, resolve_artifacts(project, bundle=archive))
+        layer_overrides(project, resolve_artifacts(project, bundle=archive))
 
         assert (
             "Bundle acme 1.2.0 overrides of lower layers: 2 rule(s) disabled"
@@ -468,10 +470,16 @@ class TestLayerDisables:
         )
         layers = resolve_artifacts(project, bundle=archive)
 
-        bundle, module = layer_disables(project, layers)
+        bundle, module = layer_overrides(project, layers)
 
         assert bundle.rule_severities == (SeverityEntry("1", "LOW", "project"),)
         assert module.rule_severities == (
             SeverityEntry("1", "LOW", "project"),
             SeverityEntry("2", "MEDIUM", "bundle acme"),
         )
+
+
+def test_old_function_names_are_aliases() -> None:
+    """Should keep the names from before severity entries for compatibility."""
+    assert disables_by_layer is overrides_by_layer
+    assert layer_disables is layer_overrides

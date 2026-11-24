@@ -27,7 +27,7 @@ from nac_artifacts import (
     DisableEntry,
     OverridesError,
     find_bundle_layers,
-    layer_disables,
+    layer_overrides,
 )
 from nac_artifacts.bundle import _sha256_file
 from nac_artifacts.constants import (
@@ -1185,7 +1185,7 @@ class TestBundleOverrides:
         archive = make_zip(tmp_path / "b.zip", self._overrides_only(rules=["102"]))
 
         layers = resolve_artifacts(project, bundle=archive)
-        disables = layer_disables(project, layers)
+        disables = layer_overrides(project, layers)
 
         assert [layer.origin for layer in layers] == ["bundle", "module"]
         assert disables[1].rules == (DisableEntry("102", "bundle tweaks"),)

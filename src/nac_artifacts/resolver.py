@@ -155,7 +155,7 @@ def _check_severity_conflicts(entries: Sequence[SeverityEntry]) -> None:
             )
 
 
-def disables_by_layer(
+def overrides_by_layer(
     project: Overrides, layers: Sequence[ArtifactLayer]
 ) -> list[LayerOverrides]:
     """Work out which disable and severity entries apply to each layer.
@@ -200,7 +200,7 @@ def disables_by_layer(
     return result
 
 
-def layer_disables(
+def layer_overrides(
     project_dir: Path, layers: Sequence[ArtifactLayer]
 ) -> list[LayerOverrides]:
     """Read the project's ``overrides.yaml`` and work out what applies to each layer.
@@ -222,4 +222,9 @@ def layer_disables(
                 layer.version or "",
                 layer.overrides.summary(),
             )
-    return disables_by_layer(load_project_overrides(project_dir), layers)
+    return overrides_by_layer(load_project_overrides(project_dir), layers)
+
+
+# Names before severity entries were added, kept for compatibility
+disables_by_layer = overrides_by_layer
+layer_disables = layer_overrides

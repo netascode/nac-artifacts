@@ -165,9 +165,9 @@ for layer in layers:  # bundles (peers) first, then the module
     print(layer.label, layer.version, layer.nac_dir)
 
 # Entries per layer (same order as layers), from nac/overrides.yaml and bundles
-from nac_artifacts import EntryMatcher, layer_disables
+from nac_artifacts import EntryMatcher, layer_overrides
 
-for layer, overrides in zip(layers, layer_disables(Path.cwd(), layers)):
+for layer, overrides in zip(layers, layer_overrides(Path.cwd(), layers)):
     matcher = EntryMatcher(overrides.rules)  # exact; use glob=True for templates
     if matcher.match("102"):
         ...  # rule 102 is disabled for this layer
